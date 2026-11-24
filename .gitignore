@@ -221,3 +221,16 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- Project-specific ---
+# Secrets (keep the template)
+.env.*
+!.env.example
+
+# Local SQLite DB (root only — src/equipment/data/ is source code)
+/data/
+
+# Claude Code personal overrides
+.claude/settings.local.json
+
+.DS_Store

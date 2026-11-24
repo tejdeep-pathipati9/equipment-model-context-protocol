@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "employee_id": "E001",
+    "text": "Can I get a second monitor? And can I have it by Friday?",
+    "expected": { "decision": "approve", "reason_code": "WITHIN_LIMIT" }
+  },
+  {
+    "id": 2,
+    "employee_id": "E002",
+    "text": "I need a company laptop for my project.",
+    "expected": { "decision": "deny", "reason_code": "ROLE_NOT_ELIGIBLE" }
+  },
+  {
+    "id": 3,
+    "employee_id": "E003",
+    "text": "One of my monitors died, can I get a replacement?",
+    "expected": { "decision": "escalate", "reason_code": "EXCEPTION_REQUEST" }
+  },
+  {
+    "id": 4,
+    "employee_id": "E004",
+    "text": "My laptop is 4 years old and really slow, I need a new one.",
+    "expected": { "decision": "escalate", "reason_code": "CLAIM_CONTRADICTS_RECORDS" }
+  }
+]

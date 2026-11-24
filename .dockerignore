@@ -1,0 +1,16 @@
+# Secrets: only ever supplied at runtime via --env-file
+.env
+.env.*
+!.env.example
+
+.git
+.github
+.claude
+.venv
+data
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+docs
+PLAN.md
