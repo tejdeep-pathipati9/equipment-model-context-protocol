@@ -1,9 +1,9 @@
-"""Read access to the SQLite database: employees and their equipment."""
+"""Read access to the SQLite database: employees, their equipment, and role policies."""
 
 import sqlite3
 from datetime import date
 
-from equipment.domain.models import Employee, EquipmentUnit
+from equipment.domain.models import Employee, EquipmentUnit, PolicyLimit
 
 
 class SqliteRepository:
@@ -31,3 +31,11 @@ class SqliteRepository:
             EquipmentUnit(item=item, issued_on=date.fromisoformat(issued_on) if issued_on else None)
             for item, issued_on in rows
         ]
+
+    def list_policies(self, role: str) -> list[PolicyLimit]:
+        """The role's limit for each item, sorted by item; empty if the role is unknown."""
+        rows = self._conn.execute(
+            "SELECT item, max_qty, refresh_months FROM policies WHERE role = ? ORDER BY item",
+            (role,),
+        ).fetchall()
+        return [PolicyLimit(*row) for row in rows]

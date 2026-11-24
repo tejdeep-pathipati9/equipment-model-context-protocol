@@ -39,6 +39,13 @@ class EquipmentUnit:
     issued_on: date | None  # None = missing issue date (escalated as RECORDS_INCOMPLETE)
 
 
+@dataclass(frozen=True)
+class PolicyLimit:
+    item: str
+    max_qty: int  # 0 = role not eligible for the item
+    refresh_months: int
+
+
 # ---------------------------------------------------------------- eligibility (requirements §2.1)
 
 

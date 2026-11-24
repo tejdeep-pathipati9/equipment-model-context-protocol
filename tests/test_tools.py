@@ -2,7 +2,7 @@
 
 import pytest
 
-from equipment.tools import get_employee_info
+from equipment.tools import get_employee_info, get_policy_limits
 
 # ---------------------------------------------------------------- get_employee_info
 
@@ -81,3 +81,41 @@ def test_employee_info_future_issue_date_has_no_age(repo, seeded_conn, as_of):
     info = get_employee_info(repo, "E005", as_of)
 
     assert {"item": "headset", "issued_on": "2027-01-15", "age_months": None} in info["equipment"]
+
+
+# ---------------------------------------------------------------- get_policy_limits
+
+ITEMS = ["headset", "keyboard_mouse", "laptop", "monitor", "phone"]
+EXPECTED_LIMITS = {  # (max_qty, refresh_months) per item, from docs/requirements.md 2
+    "intern": [(1, 24), (1, 24), (1, 36), (1, 24), (0, 0)],
+    "employee": [(1, 24), (1, 24), (1, 36), (2, 24), (0, 0)],
+    "manager": [(1, 24), (1, 24), (1, 24), (2, 24), (1, 24)],
+    "contractor": [(1, 24), (1, 24), (0, 0), (1, 24), (0, 0)],
+}
+
+
+@pytest.mark.parametrize("role", EXPECTED_LIMITS)
+def test_policy_limits_known_role(repo, role):
+    result = get_policy_limits(repo, role)
+
+    assert result["role"] == role
+    assert [limit["item"] for limit in result["limits"]] == ITEMS
+    limits = [(limit["max_qty"], limit["refresh_months"]) for limit in result["limits"]]
+    assert limits == EXPECTED_LIMITS[role]
+
+
+def test_policy_limits_new_role_needs_only_data(repo, seeded_conn):
+    seeded_conn.execute("INSERT INTO policies VALUES ('executive', 'laptop', 2, 12)")
+
+    result = get_policy_limits(repo, "executive")
+
+    assert result["limits"] == [{"item": "laptop", "max_qty": 2, "refresh_months": 12}]
+
+
+@pytest.mark.parametrize("role", ["ceo", "Manager", "", "   ", None])
+def test_policy_limits_unknown_role(repo, role):
+    assert get_policy_limits(repo, role)["error"] == "UNKNOWN_ROLE"
+
+
+def test_policy_limits_strips_whitespace(repo):
+    assert get_policy_limits(repo, "  manager ")["role"] == "manager"

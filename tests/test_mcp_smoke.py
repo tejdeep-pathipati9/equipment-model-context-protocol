@@ -30,7 +30,7 @@ async def _session(calls):
 
 def test_server_registers_tools(server_db):
     names, _ = asyncio.run(_session([]))
-    assert names == ["get_employee_info"]
+    assert names == ["get_employee_info", "get_policy_limits"]
 
 
 def test_get_employee_info_over_mcp(server_db):
@@ -46,3 +46,11 @@ def test_get_employee_info_over_mcp(server_db):
 def test_get_employee_info_unknown_id_over_mcp(server_db):
     _, [result] = asyncio.run(_session([("get_employee_info", {"employee_id": "E999"})]))
     assert result_payload(result)["error"] == "EMPLOYEE_NOT_FOUND"
+
+
+def test_get_policy_limits_over_mcp(server_db):
+    _, [result] = asyncio.run(_session([("get_policy_limits", {"role": "contractor"})]))
+
+    assert not result.is_error
+    limits = result_payload(result)["limits"]
+    assert {"item": "laptop", "max_qty": 0, "refresh_months": 0} in limits

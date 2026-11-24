@@ -3,7 +3,7 @@
 from datetime import date
 
 from equipment.data.seed import EMPLOYEES, EQUIPMENT, POLICIES
-from equipment.domain.models import Employee, EquipmentUnit
+from equipment.domain.models import Employee, EquipmentUnit, PolicyLimit
 
 
 def test_seed_loads_every_row(seeded_conn):
@@ -45,3 +45,17 @@ def test_list_equipment_missing_issue_date_sorts_last(repo, seeded_conn):
         EquipmentUnit(item="laptop", issued_on=date(2026, 6, 1)),
         EquipmentUnit(item="headset", issued_on=None),
     ]
+
+
+def test_list_policies_sorted_by_item(repo):
+    assert repo.list_policies("contractor") == [
+        PolicyLimit(item="headset", max_qty=1, refresh_months=24),
+        PolicyLimit(item="keyboard_mouse", max_qty=1, refresh_months=24),
+        PolicyLimit(item="laptop", max_qty=0, refresh_months=0),
+        PolicyLimit(item="monitor", max_qty=1, refresh_months=24),
+        PolicyLimit(item="phone", max_qty=0, refresh_months=0),
+    ]
+
+
+def test_list_policies_unknown_role(repo):
+    assert repo.list_policies("ceo") == []

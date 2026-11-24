@@ -3,10 +3,11 @@
 Errors are returned as data ({"error": CODE, "message": ...}), never raised, so they reach the
 agent as an observation it can reason about.
 
-get_employee_info is implemented; get_policy_limits, check_request_eligibility and
+get_employee_info and get_policy_limits are implemented; check_request_eligibility and
 flag_for_human_review follow.
 """
 
+from dataclasses import asdict
 from datetime import date
 from typing import Any
 
@@ -54,3 +55,15 @@ def get_employee_info(repo: SqliteRepository, employee_id: str, as_of: date) -> 
             for unit in repo.list_equipment(employee.id)
         ],
     }
+
+
+def get_policy_limits(repo: SqliteRepository, role: str) -> dict[str, Any]:
+    """Max quantity and refresh interval per item for a role, e.g. contractor laptop: max_qty=0.
+
+    A role is known if it has policy rows, so adding one needs no code change.
+    """
+    role = (role or "").strip()
+    limits = repo.list_policies(role)
+    if not limits:
+        return _error(ErrorCode.UNKNOWN_ROLE, f"no policy for role {role!r}")
+    return {"role": role, "limits": [asdict(limit) for limit in limits]}

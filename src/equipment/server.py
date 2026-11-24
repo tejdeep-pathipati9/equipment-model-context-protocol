@@ -48,6 +48,14 @@ def get_employee_info(employee_id: str) -> dict[str, Any]:
         return tools.get_employee_info(repo, employee_id, as_of())
 
 
+@mcp.tool()
+def get_policy_limits(role: str) -> dict[str, Any]:
+    """Look up what a role may hold: max quantity (0 = not eligible) and refresh interval in
+    months per item. Returns {"error": "UNKNOWN_ROLE", ...} for an unknown role."""
+    with repository() as repo:
+        return tools.get_policy_limits(repo, role)
+
+
 def main() -> None:
     # stdout carries the MCP protocol, so human-readable status goes to stderr only.
     registered = asyncio.run(mcp.list_tools())
