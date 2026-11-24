@@ -27,6 +27,8 @@ Build an internal IT equipment request handler from scratch:
 
 ## 3. Requirements
 
+> **`docs/requirements.md` is the source of truth for the rules.** It supersedes this section where they differ: one unit per request, `RECORDS_INCOMPLETE` (missing policy / issue date), completed-calendar-month ages, contradiction tolerance (±12 months), and `AT_MAX_QUANTITY` as a decision code (deny an additional unit at max).
+
 ### 3.1 Request input
 
 A request arrives as structured metadata plus free text:
@@ -36,9 +38,8 @@ A request arrives as structured metadata plus free text:
 ```
 
 - `employee_id` comes from **metadata**, never parsed from the text. Identity claimed in free text is not trusted.
-- The agent maps the text to **one catalog item** and a **request type**:
-  - `new`: an additional unit (allowed if held quantity < max)
-  - `refresh`: replace an existing unit (allowed if the oldest unit's age ≥ refresh interval)
+- The agent maps the text to **one catalog item**. It does **not** classify a request type: the
+  eligibility check infers it from holdings (§3.5).
 
 ### 3.2 Roles and catalog
 
@@ -70,15 +71,15 @@ All date logic takes an explicit `as_of: date`. Nothing calls `datetime.now()` i
 {
   "status": "eligible | not_eligible | needs_review",
   "reason_code": "WITHIN_LIMIT",
-  "request_type": "new | refresh",
+  "basis": "quantity | refresh",
   "details": { "held": 1, "max": 2, "oldest_age_months": 18, "refresh_months": 24 }
 }
 ```
 
 | Status | Reason codes |
 |---|---|
-| `eligible` | `WITHIN_LIMIT` (new, held < max) · `REFRESH_DUE` (refresh, age ≥ interval) |
-| `not_eligible` | `ROLE_NOT_ELIGIBLE` (max = 0) · `AT_MAX_QUANTITY` (new, held ≥ max) · `REFRESH_NOT_DUE` (refresh, age < interval) · `NOTHING_TO_REFRESH` (refresh, holds none) |
+| `eligible` | `WITHIN_LIMIT` (held < max, basis `quantity`) · `REFRESH_DUE` (held ≥ max, oldest age ≥ interval, basis `refresh`) |
+| `not_eligible` | `ROLE_NOT_ELIGIBLE` (max = 0) · `REFRESH_NOT_DUE` (held ≥ max, oldest age < interval, basis `refresh`) |
 | `needs_review` | `ITEM_NOT_IN_CATALOG` |
 | error | `EMPLOYEE_NOT_FOUND` (returned as a structured error, not an exception across MCP) |
 
@@ -232,11 +233,11 @@ escalations(id TEXT PK, employee_id TEXT, request TEXT, reason TEXT,
 |---|---|---|---|
 | `get_employee_info` | `employee_id` | `{id, name, role, tenure_months, equipment: [{item, issued_on, age_months}]}` or `EMPLOYEE_NOT_FOUND` error | none |
 | `get_policy_limits` | `role` | `{role, limits: [{item, max_qty, refresh_months}]}` or `UNKNOWN_ROLE` error | none |
-| `check_request_eligibility` | `employee_id`, `item`, `request_type` | Eligibility result (§3.5) | none |
+| `check_request_eligibility` | `employee_id`, `item` | Eligibility result (§3.5) | none |
 | `flag_for_human_review` | `employee_id`, `request`, `reason`, `reason_code` | `{escalation_id, status: "open"}` | inserts a row in `escalations` |
 
 Notes:
-- `request_type` is an addition to the brief's `check_request_eligibility(employee_id, item)` signature. Without it, "second monitor" and "replace my monitor" can't be told apart. Document this in the requirements doc.
+- `check_request_eligibility` keeps the brief's two-argument signature. Quantity vs. refresh is inferred from holdings (held < max → quantity check; held ≥ max → refresh check), and the result reports `basis`. A `request_type` parameter defaulting to `new` was rejected: it silently misjudges everyone at their max (e.g. E006's due laptop refresh → `AT_MAX_QUANTITY`).
 - Wrappers in `server.py` only convert arguments and results. All logic is in `tools.py`.
 - Transport: **stdio**. The agent starts the server as a subprocess.
 
@@ -257,7 +258,7 @@ Notes:
 ### 7.3 Reflection (before finalizing)
 1. **Deterministic consistency check (code, runs first):**
    - `approve` ⇒ last eligibility status was `eligible`
-   - `deny` ⇒ last eligibility status was `not_eligible`
+   - `deny` ⇒ last eligibility status was `not_eligible`, or reason `AT_MAX_QUANTITY` with basis `refresh`
    - `escalate` ⇒ `flag_for_human_review` was called and `escalation_id` is present
    - `reason_code` is a known enum value
 2. **LLM critic (separate call):** receives the draft plus the raw tool observations and answers a fixed checklist:
@@ -273,6 +274,8 @@ Notes:
 - **Live bait:** scenario 1's text adds "…and can I have it by Friday?" No tool knows delivery dates, so a draft promising Friday should be flagged.
 - **Guaranteed test:** `test_reflection.py` feeds the critic a hand-written bad draft ("Approved!" when the tool said `not_eligible`) and asserts that the code check fails and the result is `revise`.
 - The rubric accepts "improves **or confirms**", so a `pass` verdict also counts.
+- **Make the live catch likely:** at temperature 0 a drafter told "never promise dates" will write a clean draft and the trace only shows `pass`. Put the no-promises / facts-only rules in the **critic** prompt, not the drafter's, so scenario 1's first draft is likely to mention Friday and get revised.
+- **Screenshot-ready trace:** print the code-check result, the critic verdict + issues, and the draft **before and after** revision, so "improves" is visible on one screen.
 
 ---
 
@@ -295,10 +298,10 @@ Stored in `scenarios/demo.json` with expected decision + reason code, used by bo
 
 | Target | Normal cases | Edge cases |
 |---|---|---|
-| `policy.evaluate` | within limit; refresh due | max 0; at max; refresh exactly on boundary month; refresh not due; nothing to refresh |
+| `policy.evaluate` | within limit; refresh due | max 0; held = 0; refresh exactly on boundary month; refresh not due; held > max (still refresh basis) |
 | `get_employee_info` | known employee with equipment | unknown ID; employee with no equipment; empty/whitespace ID |
 | `get_policy_limits` | each role | unknown role; case sensitivity |
-| `check_request_eligibility` | E001 monitor new → eligible; E006 laptop refresh → eligible | unknown employee; unknown item → `needs_review`; contractor laptop → `ROLE_NOT_ELIGIBLE`; E003 monitor new → `AT_MAX_QUANTITY` |
+| `check_request_eligibility` | E001 monitor → `WITHIN_LIMIT`; E006 laptop → `REFRESH_DUE` | unknown employee; unknown item → `needs_review`; contractor laptop → `ROLE_NOT_ELIGIBLE`; E003 monitor → `REFRESH_NOT_DUE` |
 | `flag_for_human_review` | row inserted, ID returned | unknown employee still recorded; empty reason rejected; two calls → two distinct IDs |
 | Consistency check | valid approve/deny/escalate | approve with `not_eligible`; escalate without ID; unknown reason code |
 | Critic (fake `LLMClient`) | pass path parsed | bad draft → `revise`; malformed critic output → treated as `revise` |

@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS equipment (
     id          INTEGER PRIMARY KEY,
     employee_id TEXT NOT NULL REFERENCES employees(id),
     item        TEXT NOT NULL,
-    issued_on   DATE NOT NULL
+    issued_on   DATE  -- nullable: a missing date is escalated as RECORDS_INCOMPLETE
 );
 
 CREATE TABLE IF NOT EXISTS policies (
