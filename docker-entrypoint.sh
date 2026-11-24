@@ -1,5 +1,8 @@
 #!/bin/sh
-# Seed the DB if missing (keeps escalations on a mounted /app/data), then run the agent.
+# `server`: seed the DB if missing, then serve MCP. Anything else: run the agent with those arguments.
 set -e
-seed
+if [ "$1" = "server" ]; then
+    seed
+    exec server
+fi
 exec agent "$@"

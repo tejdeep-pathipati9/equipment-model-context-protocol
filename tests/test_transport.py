@@ -7,11 +7,12 @@ from mcp import StdioServerParameters
 
 from equipment import config
 from equipment.agent.mcp_client import ServerUnavailable, connect, connection
+from equipment.server import transport_security
 
 
 @pytest.fixture(autouse=True)
 def no_mcp_settings(monkeypatch):
-    for name in ("MCP_TRANSPORT", "MCP_HOST", "MCP_PORT", "MCP_URL"):
+    for name in ("MCP_TRANSPORT", "MCP_HOST", "MCP_PORT", "MCP_URL", "MCP_ALLOWED_HOSTS"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -67,3 +68,28 @@ def test_http_server_not_running(monkeypatch, free_port):
 
     with pytest.raises(ServerUnavailable, match=f"127.0.0.1:{free_port}/mcp"):
         asyncio.run(use())
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1"])
+def test_localhost_uses_the_sdk_protection(monkeypatch, host):
+    monkeypatch.setenv("MCP_HOST", host)
+
+    assert transport_security() is None
+
+
+def test_other_host_needs_an_allow_list(monkeypatch):
+    monkeypatch.setenv("MCP_HOST", "0.0.0.0")
+
+    with pytest.raises(SystemExit, match="MCP_ALLOWED_HOSTS"):
+        transport_security()
+
+
+def test_other_host_checks_the_allow_list(monkeypatch):
+    monkeypatch.setenv("MCP_HOST", "0.0.0.0")
+    monkeypatch.setenv("MCP_ALLOWED_HOSTS", "mcp-server:*, localhost:*")
+
+    security = transport_security()
+
+    assert security.enable_dns_rebinding_protection is True
+    assert security.allowed_hosts == ["mcp-server:*", "localhost:*"]
+    assert security.allowed_origins == ["http://mcp-server:*", "http://localhost:*"]

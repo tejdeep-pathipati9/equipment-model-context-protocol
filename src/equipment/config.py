@@ -21,6 +21,11 @@ def host() -> str:
     return os.environ.get("MCP_HOST", "127.0.0.1")
 
 
+def allowed_hosts() -> list[str]:
+    """Host headers the server accepts when not on localhost, e.g. "mcp-server:*"."""
+    return [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+
+
 def port() -> int:
     value = os.environ.get("MCP_PORT", "8000")
     if not value.isdecimal() or not 1 <= int(value) <= 65535:

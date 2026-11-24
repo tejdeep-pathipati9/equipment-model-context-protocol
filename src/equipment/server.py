@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
 from equipment import config, tools
 from equipment.config import Transport
@@ -82,6 +83,21 @@ def flag_for_human_review(
         )
 
 
+LOCALHOST = ("127.0.0.1", "localhost", "::1")
+
+
+def transport_security() -> TransportSecuritySettings | None:
+    """The SDK protects localhost itself; any other address must list its allowed hosts."""
+    if config.host() in LOCALHOST:
+        return None
+    hosts = config.allowed_hosts()
+    if not hosts:
+        raise SystemExit(f"MCP_HOST={config.host()} needs MCP_ALLOWED_HOSTS, e.g. mcp-server:*")
+    return TransportSecuritySettings(
+        allowed_hosts=hosts, allowed_origins=[f"http://{host}" for host in hosts]
+    )
+
+
 def main() -> None:
     # With stdio, stdout carries the MCP protocol, so status goes to stderr only.
     transport = config.transport()
@@ -95,8 +111,14 @@ def main() -> None:
             log("waiting for a client (JSON-RPC on stdin); Ctrl+C to stop")
             mcp.run("stdio")
         else:
+            security = transport_security()
             log(f"listening on http://{config.host()}:{config.port()}/mcp; Ctrl+C to stop")
-            mcp.run("streamable-http", host=config.host(), port=config.port())
+            mcp.run(
+                "streamable-http",
+                host=config.host(),
+                port=config.port(),
+                transport_security=security,
+            )
     except KeyboardInterrupt:
         log("stopped")
 

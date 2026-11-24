@@ -1,0 +1,35 @@
+# docker compose up -d mcp-server                  # MCP server on http://127.0.0.1:8000/mcp
+# docker compose run --rm agent --scenario 3       # one agent run against it
+
+services:
+  mcp-server:
+    build: .
+    image: equip-agent
+    command: ["server"]
+    environment:
+      MCP_HOST: 0.0.0.0  # reachable from the agent container
+      MCP_ALLOWED_HOSTS: "mcp-server:*,localhost:*,127.0.0.1:*"
+      AS_OF_DATE: ${AS_OF_DATE:-2026-12-01}
+    ports:
+      - "127.0.0.1:8000:8000"  # this Mac only
+    volumes:
+      - equipment-data:/app/data  # escalations survive restarts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8000), 2)"]
+      interval: 2s
+      retries: 15
+
+  agent:
+    image: equip-agent
+    profiles: ["agent"]  # started on demand with `docker compose run`
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MCP_URL: http://mcp-server:8000/mcp
+    depends_on:
+      mcp-server:
+        condition: service_healthy
+
+volumes:
+  equipment-data:
