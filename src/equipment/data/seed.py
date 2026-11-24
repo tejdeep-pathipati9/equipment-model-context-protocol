@@ -1,6 +1,6 @@
-"""Create the SQLite database if it doesn't exist (`uv run seed`).
+"""Create and seed the SQLite database if it doesn't exist (`uv run seed`).
 
-Currently creates the schema only; seed rows are added in build step 4.
+Synthetic data from docs/requirements.md §2 and §6, as of 2026-12-01.
 """
 
 import os
@@ -9,6 +9,56 @@ from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_DB_PATH = "./data/equipment.db"
+
+EMPLOYEES = [
+    # id, name, role, hire_date
+    ("E001", "Alice Chen", "employee", "2023-03-15"),
+    ("E002", "Bob Martinez", "contractor", "2026-01-20"),
+    ("E003", "Carol Singh", "employee", "2024-11-04"),
+    ("E004", "Dan Okafor", "manager", "2021-06-01"),
+    ("E005", "Eve Novak", "intern", "2026-06-01"),
+    ("E006", "Frank Liu", "employee", "2020-02-10"),
+]
+
+EQUIPMENT = [
+    # employee_id, item, issued_on
+    ("E001", "monitor", "2025-06-01"),
+    ("E001", "laptop", "2024-09-01"),
+    ("E002", "monitor", "2026-02-01"),
+    ("E003", "monitor", "2026-03-15"),
+    ("E003", "monitor", "2026-03-15"),
+    ("E003", "laptop", "2025-01-10"),
+    ("E004", "laptop", "2025-12-01"),
+    ("E004", "monitor", "2025-12-01"),
+    ("E004", "monitor", "2025-12-01"),
+    ("E004", "phone", "2025-12-01"),
+    ("E005", "laptop", "2026-06-01"),
+    ("E006", "laptop", "2023-05-01"),
+]
+
+# role, item, max_qty, refresh_months  (max_qty 0 = role not eligible for the item)
+POLICIES = [
+    ("intern", "laptop", 1, 36),
+    ("employee", "laptop", 1, 36),
+    ("manager", "laptop", 1, 24),
+    ("contractor", "laptop", 0, 0),
+    ("intern", "monitor", 1, 24),
+    ("employee", "monitor", 2, 24),
+    ("manager", "monitor", 2, 24),
+    ("contractor", "monitor", 1, 24),
+    ("intern", "keyboard_mouse", 1, 24),
+    ("employee", "keyboard_mouse", 1, 24),
+    ("manager", "keyboard_mouse", 1, 24),
+    ("contractor", "keyboard_mouse", 1, 24),
+    ("intern", "headset", 1, 24),
+    ("employee", "headset", 1, 24),
+    ("manager", "headset", 1, 24),
+    ("contractor", "headset", 1, 24),
+    ("intern", "phone", 0, 0),
+    ("employee", "phone", 0, 0),
+    ("manager", "phone", 1, 24),
+    ("contractor", "phone", 0, 0),
+]
 
 
 def db_path() -> Path:
@@ -20,6 +70,14 @@ def create_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(schema)
 
 
+def seed_data(conn: sqlite3.Connection) -> None:
+    conn.executemany("INSERT INTO employees VALUES (?, ?, ?, ?)", EMPLOYEES)
+    conn.executemany(
+        "INSERT INTO equipment (employee_id, item, issued_on) VALUES (?, ?, ?)", EQUIPMENT
+    )
+    conn.executemany("INSERT INTO policies VALUES (?, ?, ?, ?)", POLICIES)
+
+
 def main() -> None:
     path = db_path()
     if path.exists():
@@ -28,7 +86,8 @@ def main() -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
         create_schema(conn)
-    print(f"seed: created {path}")
+        seed_data(conn)
+    print(f"seed: created {path} ({len(EMPLOYEES)} employees, {len(EQUIPMENT)} equipment rows)")
 
 
 if __name__ == "__main__":

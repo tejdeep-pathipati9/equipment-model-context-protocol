@@ -13,7 +13,6 @@ MODULES = [
     "equipment.tools",
     "equipment.domain.models",
     "equipment.domain.policy",
-    "equipment.data.repository",
     "equipment.data.sqlite_repo",
     "equipment.data.seed",
     "equipment.agent.cli",
