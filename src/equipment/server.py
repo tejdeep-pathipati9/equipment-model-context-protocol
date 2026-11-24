@@ -73,7 +73,8 @@ def flag_for_human_review(
 ) -> dict[str, Any]:
     """Escalate a request to a human. Saves a record, so call it at most once per request.
     reason_code: UNKNOWN_EMPLOYEE, VAGUE_REQUEST, ITEM_NOT_IN_CATALOG, RECORDS_INCOMPLETE,
-    CLAIM_CONTRADICTS_RECORDS, EXCEPTION_REQUEST, REFLECTION_FAILED or AGENT_STEP_LIMIT.
+    CLAIM_CONTRADICTS_RECORDS, EXCEPTION_REQUEST, REFLECTION_FAILED, AGENT_STEP_LIMIT or
+    AGENT_REFUSED.
     Returns the escalation_id and status."""
     with repository() as repo:
         return tools.flag_for_human_review(
