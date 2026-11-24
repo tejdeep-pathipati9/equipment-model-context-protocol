@@ -30,13 +30,7 @@ async def _session(calls):
 
 def test_server_registers_tools(server_db):
     names, _ = asyncio.run(_session([]))
-    assert {"ping", "get_employee_info"} <= set(names)
-
-
-def test_ping(server_db):
-    _, [result] = asyncio.run(_session([("ping", {"message": "hi"})]))
-    assert not result.is_error
-    assert result_payload(result) in ("pong: hi", {"result": "pong: hi"})
+    assert names == ["get_employee_info"]
 
 
 def test_get_employee_info_over_mcp(server_db):

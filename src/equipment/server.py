@@ -41,12 +41,6 @@ def repository() -> Generator[SqliteRepository]:
 
 
 @mcp.tool()
-def ping(message: str = "hello") -> str:
-    """Connectivity check: echoes the message back."""
-    return f"pong: {message}"
-
-
-@mcp.tool()
 def get_employee_info(employee_id: str) -> dict[str, Any]:
     """Look up an employee's role, tenure in months, and equipment on file (item, issue date,
     age in months). Returns {"error": "EMPLOYEE_NOT_FOUND", ...} for an unknown ID."""
