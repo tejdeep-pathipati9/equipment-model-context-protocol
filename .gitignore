@@ -230,6 +230,9 @@ __marimo__/
 # Local SQLite DB (root only — src/equipment/data/ is source code)
 /data/
 
+# Personal design backlog (not part of the deliverable)
+docs/revisions.md
+
 # Claude Code personal overrides
 .claude/settings.local.json
 
