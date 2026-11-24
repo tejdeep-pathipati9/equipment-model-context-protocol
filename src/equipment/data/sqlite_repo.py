@@ -1,9 +1,9 @@
-"""Read access to the SQLite database: employees, their equipment, and role policies."""
+"""Access to the SQLite database: employees, equipment, role policies and escalations."""
 
 import sqlite3
 from datetime import date
 
-from equipment.domain.models import Employee, EquipmentUnit, PolicyLimit
+from equipment.domain.models import Employee, EquipmentUnit, Escalation, PolicyLimit
 
 
 class SqliteRepository:
@@ -44,3 +44,21 @@ class SqliteRepository:
         """Every item that has a policy for at least one role, sorted."""
         rows = self._conn.execute("SELECT DISTINCT item FROM policies ORDER BY item").fetchall()
         return [item for (item,) in rows]
+
+    def add_escalation(self, escalation: Escalation) -> None:
+        """Save an escalation and commit: an uncommitted row is lost when the connection closes."""
+        with self._conn:  # commits
+            self._conn.execute(
+                "INSERT INTO escalations "
+                "(id, employee_id, request, reason, reason_code, created_at, status) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    escalation.id,
+                    escalation.employee_id,
+                    escalation.request,
+                    escalation.reason,
+                    escalation.reason_code,
+                    escalation.created_at.isoformat(),
+                    escalation.status,
+                ),
+            )

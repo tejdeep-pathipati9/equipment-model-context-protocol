@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from collections.abc import Generator
 from contextlib import closing, contextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -64,6 +64,20 @@ def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
     pass the item as the employee wrote it."""
     with repository() as repo:
         return tools.check_request_eligibility(repo, employee_id, item, as_of())
+
+
+@mcp.tool()
+def flag_for_human_review(
+    employee_id: str, request: str, reason: str, reason_code: str
+) -> dict[str, Any]:
+    """Escalate a request to a human. Saves a record, so call it at most once per request.
+    reason_code: UNKNOWN_EMPLOYEE, VAGUE_REQUEST, ITEM_NOT_IN_CATALOG, RECORDS_INCOMPLETE,
+    CLAIM_CONTRADICTS_RECORDS, EXCEPTION_REQUEST, REFLECTION_FAILED or AGENT_STEP_LIMIT.
+    Returns the escalation_id and status."""
+    with repository() as repo:
+        return tools.flag_for_human_review(
+            repo, employee_id, request, reason, reason_code, datetime.now(UTC)
+        )
 
 
 def main() -> None:

@@ -87,7 +87,7 @@ what is missing (`role_policy` or `issue_date`). An unknown employee returns a s
 | `get_employee_info` | `employee_id` | id, name, role, tenure in months, equipment on file (item, issue date, age in months; `null` if the date is missing) | none |
 | `get_policy_limits` | `role` | each item's max quantity and refresh interval for that role; `UNKNOWN_ROLE` error otherwise | none |
 | `check_request_eligibility` | `employee_id`, `item` | status, reason code, basis (`quantity` / `refresh`), details (held, max, oldest age, refresh interval, missing) | none |
-| `flag_for_human_review` | `employee_id`, `request`, `reason`, `reason_code` | escalation ID, status `open` | writes an escalation record |
+| `flag_for_human_review` | `employee_id`, `request`, `reason`, `reason_code` | escalation ID, status `open`; `INVALID_ESCALATION` error if the request or reason is empty or the code isn't an escalation code | writes an escalation record |
 
 **Notes on the brief:**
 - `check_request_eligibility` keeps the brief's two-argument signature. Whether it checks

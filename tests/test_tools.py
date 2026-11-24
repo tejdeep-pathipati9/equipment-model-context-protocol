@@ -1,8 +1,17 @@
 """Tool functions tested directly: no MCP, no LLM (brief Part 3)."""
 
+import sqlite3
+from contextlib import closing
+from datetime import UTC, datetime
+
 import pytest
 
-from equipment.tools import check_request_eligibility, get_employee_info, get_policy_limits
+from equipment.tools import (
+    check_request_eligibility,
+    flag_for_human_review,
+    get_employee_info,
+    get_policy_limits,
+)
 
 # ---------------------------------------------------------------- get_employee_info
 
@@ -211,3 +220,117 @@ def test_eligibility_new_item_needs_only_data(repo, seeded_conn, as_of):
     result = check_request_eligibility(repo, "E001", "tablet", as_of)
 
     assert result["reason_code"] == "WITHIN_LIMIT"
+
+
+# ---------------------------------------------------------------- flag_for_human_review
+
+NOW = datetime(2026, 12, 1, 9, 30, tzinfo=UTC)
+
+
+def flag(repo, **overrides):
+    args = {
+        "employee_id": "E003",
+        "request": "One of my monitors died",
+        "reason": "Breakage can't be verified",
+        "reason_code": "EXCEPTION_REQUEST",
+        "created_at": NOW,
+    }
+    return flag_for_human_review(repo, **(args | overrides))
+
+
+def saved_escalations(db_path):
+    """Read through a second connection, so uncommitted rows don't count."""
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.row_factory = sqlite3.Row
+        return [dict(row) for row in conn.execute("SELECT * FROM escalations")]
+
+
+def test_flag_saves_the_escalation(repo, db_path):
+    result = flag(repo)
+
+    assert result["status"] == "open"
+    assert saved_escalations(db_path) == [
+        {
+            "id": result["escalation_id"],
+            "employee_id": "E003",
+            "request": "One of my monitors died",
+            "reason": "Breakage can't be verified",
+            "reason_code": "EXCEPTION_REQUEST",
+            "created_at": "2026-12-01T09:30:00+00:00",
+            "status": "open",
+        }
+    ]
+
+
+def test_flag_id_format(repo):
+    prefix, suffix = flag(repo)["escalation_id"].split("-")
+
+    assert prefix == "ESC"
+    assert len(suffix) == 8
+
+
+def test_flag_twice_saves_two(repo, db_path):
+    first, second = flag(repo), flag(repo)
+
+    assert first["escalation_id"] != second["escalation_id"]
+    assert len(saved_escalations(db_path)) == 2
+
+
+def test_flag_unknown_employee_is_saved(repo, db_path):
+    flag(repo, employee_id="E999", reason_code="UNKNOWN_EMPLOYEE")
+
+    assert saved_escalations(db_path)[0]["employee_id"] == "E999"
+
+
+def test_flag_strips_whitespace(repo, db_path):
+    flag(repo, employee_id=" E003 ", request=" broken ", reason=" unverifiable ")
+
+    saved = saved_escalations(db_path)[0]
+    assert (saved["employee_id"], saved["request"], saved["reason"]) == (
+        "E003",
+        "broken",
+        "unverifiable",
+    )
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "UNKNOWN_EMPLOYEE",
+        "VAGUE_REQUEST",
+        "ITEM_NOT_IN_CATALOG",
+        "RECORDS_INCOMPLETE",
+        "CLAIM_CONTRADICTS_RECORDS",
+        "EXCEPTION_REQUEST",
+        "REFLECTION_FAILED",
+        "AGENT_STEP_LIMIT",
+    ],
+)
+def test_flag_accepts_escalation_codes(repo, reason_code):
+    assert flag(repo, reason_code=reason_code)["status"] == "open"
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error"),
+    [
+        ({"employee_id": ""}, "INVALID_EMPLOYEE_ID"),
+        ({"employee_id": "  "}, "INVALID_EMPLOYEE_ID"),
+        ({"employee_id": None}, "INVALID_EMPLOYEE_ID"),
+        ({"request": " "}, "INVALID_ESCALATION"),
+        ({"request": None}, "INVALID_ESCALATION"),
+        ({"reason": " "}, "INVALID_ESCALATION"),
+        ({"reason": None}, "INVALID_ESCALATION"),
+        ({"reason_code": None}, "INVALID_ESCALATION"),
+        ({"reason_code": "MADE_UP"}, "INVALID_ESCALATION"),
+        ({"reason_code": "WITHIN_LIMIT"}, "INVALID_ESCALATION"),
+        ({"reason_code": "REFRESH_DUE"}, "INVALID_ESCALATION"),
+        ({"reason_code": "REFRESH_NOT_DUE"}, "INVALID_ESCALATION"),
+        ({"reason_code": "ROLE_NOT_ELIGIBLE"}, "INVALID_ESCALATION"),
+        ({"reason_code": "AT_MAX_QUANTITY"}, "INVALID_ESCALATION"),
+    ],
+)
+def test_flag_rejects_bad_input_and_saves_nothing(repo, db_path, overrides, error):
+    result = flag(repo, **overrides)
+
+    assert result["error"] == error
+    assert saved_escalations(db_path) == []

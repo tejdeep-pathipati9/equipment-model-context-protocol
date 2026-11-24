@@ -30,7 +30,12 @@ async def _session(calls):
 
 def test_server_registers_tools(server_db):
     names, _ = asyncio.run(_session([]))
-    assert names == ["get_employee_info", "get_policy_limits", "check_request_eligibility"]
+    assert names == [
+        "get_employee_info",
+        "get_policy_limits",
+        "check_request_eligibility",
+        "flag_for_human_review",
+    ]
 
 
 def test_get_employee_info_over_mcp(server_db):
@@ -63,3 +68,18 @@ def test_check_request_eligibility_over_mcp(server_db):
     assert not result.is_error
     payload = result_payload(result)
     assert (payload["reason_code"], payload["oldest_age_months"]) == ("REFRESH_DUE", 43)
+
+
+def test_flag_for_human_review_over_mcp(server_db):
+    args = {
+        "employee_id": "E003",
+        "request": "One of my monitors died",
+        "reason": "Breakage can't be verified",
+        "reason_code": "EXCEPTION_REQUEST",
+    }
+    _, [result] = asyncio.run(_session([("flag_for_human_review", args)]))
+
+    assert not result.is_error
+    with closing(sqlite3.connect(server_db)) as conn:
+        saved = conn.execute("SELECT id, employee_id, reason_code FROM escalations").fetchall()
+    assert saved == [(result_payload(result)["escalation_id"], "E003", "EXCEPTION_REQUEST")]

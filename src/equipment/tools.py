@@ -2,16 +2,23 @@
 
 Errors are returned as data ({"error": CODE, "message": ...}), never raised, so they reach the
 agent as an observation it can reason about.
-
-flag_for_human_review is still to come.
 """
 
 from dataclasses import asdict
-from datetime import date
+from datetime import date, datetime
 from typing import Any
+from uuid import uuid4
 
 from equipment.data.sqlite_repo import SqliteRepository
-from equipment.domain.models import EligibilityResult, Employee, ErrorCode, ReasonCode, Status
+from equipment.domain.models import (
+    ESCALATION_CODES,
+    EligibilityResult,
+    Employee,
+    ErrorCode,
+    Escalation,
+    ReasonCode,
+    Status,
+)
 from equipment.domain.policy import completed_months, evaluate
 
 
@@ -95,3 +102,40 @@ def check_request_eligibility(
         issue_dates = [u.issued_on for u in repo.list_equipment(employee.id) if u.item == item]
         result = evaluate(limits.get(item), issue_dates, as_of)
     return {"employee_id": employee.id, "item": item, **asdict(result)}
+
+
+def flag_for_human_review(
+    repo: SqliteRepository,
+    employee_id: str,
+    request: str,
+    reason: str,
+    reason_code: str,
+    created_at: datetime,
+) -> dict[str, Any]:
+    """Save an escalation for a human, e.g. E003 broken monitor -> ESC-3f9a1c2e, open.
+
+    The employee may be unknown; `created_at` is passed in so this never reads the clock.
+    """
+    employee_id = (employee_id or "").strip()
+    request = (request or "").strip()
+    reason = (reason or "").strip()
+    if not employee_id:
+        return _error(ErrorCode.INVALID_EMPLOYEE_ID, "employee_id must not be empty")
+    if not request or not reason:
+        return _error(ErrorCode.INVALID_ESCALATION, "request and reason must not be empty")
+    if reason_code not in ESCALATION_CODES:
+        allowed = ", ".join(sorted(ESCALATION_CODES))
+        return _error(
+            ErrorCode.INVALID_ESCALATION, f"reason_code {reason_code!r} must be one of: {allowed}"
+        )
+
+    escalation = Escalation(
+        id=f"ESC-{uuid4().hex[:8]}",
+        employee_id=employee_id,
+        request=request,
+        reason=reason,
+        reason_code=ReasonCode(reason_code),
+        created_at=created_at,
+    )
+    repo.add_escalation(escalation)
+    return {"escalation_id": escalation.id, "status": escalation.status}
