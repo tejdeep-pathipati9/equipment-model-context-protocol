@@ -64,7 +64,7 @@ Rules are applied in order; the first match wins.
 
 The result reports which check ran (`basis`) so the trace shows it, and for `RECORDS_INCOMPLETE`
 what is missing (`role_policy` or `issue_date`). An unknown employee returns a structured
-`EMPLOYEE_NOT_FOUND` error, not an exception.
+`EMPLOYEE_NOT_FOUND` error, and an empty ID returns `INVALID_EMPLOYEE_ID`; neither is an exception.
 
 ### 2.2 Dates and ages
 
@@ -89,7 +89,7 @@ what is missing (`role_policy` or `issue_date`). An unknown employee returns a s
 | `check_request_eligibility` | `employee_id`, `item` | status, reason code, basis (`quantity` / `refresh`), details (held, max, oldest age, refresh interval, missing) | none |
 | `flag_for_human_review` | `employee_id`, `request`, `reason`, `reason_code` | escalation ID, status `open` | writes an escalation record |
 
-**Deviations from the brief:**
+**Notes on the brief:**
 - `check_request_eligibility` keeps the brief's two-argument signature. Whether it checks
   quantity or refresh is inferred from holdings (§2.1), so the agent never has to classify the
   request type, and a replacement request from someone at their max is never misjudged as
