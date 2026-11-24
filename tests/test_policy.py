@@ -67,6 +67,9 @@ FUTURE = date(2027, 1, 1)
         pytest.param(
             TWO_PER_24_MONTHS, [OLD, None], "needs_review", "RECORDS_INCOMPLETE", id="one-no-date"
         ),
+        pytest.param(
+            ONE_PER_24_MONTHS, [AS_OF], "not_eligible", "REFRESH_NOT_DUE", id="issued-today"
+        ),
         pytest.param(ONE_PER_24_MONTHS, [OLD], "eligible", "REFRESH_DUE", id="due"),
         pytest.param(ONE_PER_24_MONTHS, [ANNIVERSARY], "eligible", "REFRESH_DUE", id="anniversary"),
         pytest.param(
@@ -107,8 +110,13 @@ def test_evaluate_quantity_check_reports_no_age():
 
 
 @pytest.mark.parametrize(
-    ("limit", "issue_dates", "missing"),
-    [(None, [], "role_policy"), (ONE_PER_24_MONTHS, [None], "issue_date")],
+    ("limit", "issue_dates", "missing", "basis", "held"),
+    [
+        (None, [OLD], "role_policy", None, 1),
+        (ONE_PER_24_MONTHS, [None], "issue_date", "refresh", 1),
+    ],
 )
-def test_evaluate_says_what_is_missing(limit, issue_dates, missing):
-    assert evaluate(limit, issue_dates, AS_OF).missing == missing
+def test_evaluate_says_what_is_missing(limit, issue_dates, missing, basis, held):
+    result = evaluate(limit, issue_dates, AS_OF)
+
+    assert (result.missing, result.basis, result.held) == (missing, basis, held)
