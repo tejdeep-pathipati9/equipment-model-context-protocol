@@ -30,13 +30,12 @@ async def _session(calls):
 
 def test_server_registers_tools(server_db):
     names, _ = asyncio.run(_session([]))
-    assert {"ping", "get_employee_info"} <= set(names)
-
-
-def test_ping(server_db):
-    _, [result] = asyncio.run(_session([("ping", {"message": "hi"})]))
-    assert not result.is_error
-    assert result_payload(result) in ("pong: hi", {"result": "pong: hi"})
+    assert names == [
+        "get_employee_info",
+        "get_policy_limits",
+        "check_request_eligibility",
+        "flag_for_human_review",
+    ]
 
 
 def test_get_employee_info_over_mcp(server_db):
@@ -52,3 +51,35 @@ def test_get_employee_info_over_mcp(server_db):
 def test_get_employee_info_unknown_id_over_mcp(server_db):
     _, [result] = asyncio.run(_session([("get_employee_info", {"employee_id": "E999"})]))
     assert result_payload(result)["error"] == "EMPLOYEE_NOT_FOUND"
+
+
+def test_get_policy_limits_over_mcp(server_db):
+    _, [result] = asyncio.run(_session([("get_policy_limits", {"role": "contractor"})]))
+
+    assert not result.is_error
+    limits = result_payload(result)["limits"]
+    assert {"item": "laptop", "max_qty": 0, "refresh_months": 0} in limits
+
+
+def test_check_request_eligibility_over_mcp(server_db):
+    call = ("check_request_eligibility", {"employee_id": "E006", "item": "laptop"})
+    _, [result] = asyncio.run(_session([call]))
+
+    assert not result.is_error
+    payload = result_payload(result)
+    assert (payload["reason_code"], payload["oldest_age_months"]) == ("REFRESH_DUE", 43)
+
+
+def test_flag_for_human_review_over_mcp(server_db):
+    args = {
+        "employee_id": "E003",
+        "request": "One of my monitors died",
+        "reason": "Breakage can't be verified",
+        "reason_code": "EXCEPTION_REQUEST",
+    }
+    _, [result] = asyncio.run(_session([("flag_for_human_review", args)]))
+
+    assert not result.is_error
+    with closing(sqlite3.connect(server_db)) as conn:
+        saved = conn.execute("SELECT id, employee_id, reason_code FROM escalations").fetchall()
+    assert saved == [(result_payload(result)["escalation_id"], "E003", "EXCEPTION_REQUEST")]

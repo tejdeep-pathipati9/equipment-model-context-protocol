@@ -11,7 +11,7 @@ import sqlite3
 import sys
 from collections.abc import Generator
 from contextlib import closing, contextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
@@ -41,17 +41,43 @@ def repository() -> Generator[SqliteRepository]:
 
 
 @mcp.tool()
-def ping(message: str = "hello") -> str:
-    """Connectivity check: echoes the message back."""
-    return f"pong: {message}"
-
-
-@mcp.tool()
 def get_employee_info(employee_id: str) -> dict[str, Any]:
     """Look up an employee's role, tenure in months, and equipment on file (item, issue date,
     age in months). Returns {"error": "EMPLOYEE_NOT_FOUND", ...} for an unknown ID."""
     with repository() as repo:
         return tools.get_employee_info(repo, employee_id, as_of())
+
+
+@mcp.tool()
+def get_policy_limits(role: str) -> dict[str, Any]:
+    """Look up what a role may hold: max quantity (0 = not eligible) and refresh interval in
+    months per item. Returns {"error": "UNKNOWN_ROLE", ...} for an unknown role."""
+    with repository() as repo:
+        return tools.get_policy_limits(repo, role)
+
+
+@mcp.tool()
+def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
+    """Check whether policy and records allow an employee one unit of an item. Returns status
+    (eligible, not_eligible, needs_review), reason_code, basis (quantity = one more unit,
+    refresh = replaces the oldest unit) and the numbers used. If nothing in the catalog matches,
+    pass the item as the employee wrote it."""
+    with repository() as repo:
+        return tools.check_request_eligibility(repo, employee_id, item, as_of())
+
+
+@mcp.tool()
+def flag_for_human_review(
+    employee_id: str, request: str, reason: str, reason_code: str
+) -> dict[str, Any]:
+    """Escalate a request to a human. Saves a record, so call it at most once per request.
+    reason_code: UNKNOWN_EMPLOYEE, VAGUE_REQUEST, ITEM_NOT_IN_CATALOG, RECORDS_INCOMPLETE,
+    CLAIM_CONTRADICTS_RECORDS, EXCEPTION_REQUEST, REFLECTION_FAILED or AGENT_STEP_LIMIT.
+    Returns the escalation_id and status."""
+    with repository() as repo:
+        return tools.flag_for_human_review(
+            repo, employee_id, request, reason, reason_code, datetime.now(UTC)
+        )
 
 
 def main() -> None:

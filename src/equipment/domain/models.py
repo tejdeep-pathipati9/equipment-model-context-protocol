@@ -1,7 +1,7 @@
 """Domain dataclasses and enums (docs/requirements.md 1, 2, 4, 6)."""
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from enum import StrEnum
 
 # ---------------------------------------------------------------- vocabulary
@@ -37,6 +37,13 @@ class Employee:
 class EquipmentUnit:
     item: str
     issued_on: date | None  # None = missing issue date (escalated as RECORDS_INCOMPLETE)
+
+
+@dataclass(frozen=True)
+class PolicyLimit:
+    item: str
+    max_qty: int  # 0 = role not eligible for the item
+    refresh_months: int
 
 
 # ---------------------------------------------------------------- eligibility (requirements §2.1)
@@ -76,6 +83,32 @@ class ReasonCode(StrEnum):
     AGENT_STEP_LIMIT = "AGENT_STEP_LIMIT"
 
 
+# The reason codes that may be escalated (the rest are approve/deny outcomes).
+ESCALATION_CODES = frozenset(
+    {
+        ReasonCode.UNKNOWN_EMPLOYEE,
+        ReasonCode.VAGUE_REQUEST,
+        ReasonCode.ITEM_NOT_IN_CATALOG,
+        ReasonCode.RECORDS_INCOMPLETE,
+        ReasonCode.CLAIM_CONTRADICTS_RECORDS,
+        ReasonCode.EXCEPTION_REQUEST,
+        ReasonCode.REFLECTION_FAILED,
+        ReasonCode.AGENT_STEP_LIMIT,
+    }
+)
+
+
+@dataclass(frozen=True)
+class Escalation:
+    id: str
+    employee_id: str  # may be unknown: unknown employees are escalated too
+    request: str
+    reason: str
+    reason_code: ReasonCode
+    created_at: datetime
+    status: str = "open"
+
+
 @dataclass(frozen=True)
 class EligibilityResult:
     status: Status
@@ -97,6 +130,7 @@ class ErrorCode(StrEnum):
     EMPLOYEE_NOT_FOUND = "EMPLOYEE_NOT_FOUND"
     INVALID_EMPLOYEE_ID = "INVALID_EMPLOYEE_ID"
     UNKNOWN_ROLE = "UNKNOWN_ROLE"
+    INVALID_ESCALATION = "INVALID_ESCALATION"
 
 
 class Decision(StrEnum):

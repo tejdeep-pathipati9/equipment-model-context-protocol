@@ -2,8 +2,8 @@
 
 Used by the agent, and runnable on its own as a connectivity check:
 
-    uv run python -m equipment.agent.mcp_client                      # list tools
-    uv run python -m equipment.agent.mcp_client ping '{"message": "hi"}'   # call one
+    uv run python -m equipment.agent.mcp_client                                          # list
+    uv run python -m equipment.agent.mcp_client get_employee_info '{"employee_id": "E001"}'  # call
 """
 
 import argparse

@@ -64,7 +64,7 @@ Rules are applied in order; the first match wins.
 
 The result reports which check ran (`basis`) so the trace shows it, and for `RECORDS_INCOMPLETE`
 what is missing (`role_policy` or `issue_date`). An unknown employee returns a structured
-`EMPLOYEE_NOT_FOUND` error, not an exception.
+`EMPLOYEE_NOT_FOUND` error, and an empty ID returns `INVALID_EMPLOYEE_ID`; neither is an exception.
 
 ### 2.2 Dates and ages
 
@@ -87,9 +87,9 @@ what is missing (`role_policy` or `issue_date`). An unknown employee returns a s
 | `get_employee_info` | `employee_id` | id, name, role, tenure in months, equipment on file (item, issue date, age in months; `null` if the date is missing) | none |
 | `get_policy_limits` | `role` | each item's max quantity and refresh interval for that role; `UNKNOWN_ROLE` error otherwise | none |
 | `check_request_eligibility` | `employee_id`, `item` | status, reason code, basis (`quantity` / `refresh`), details (held, max, oldest age, refresh interval, missing) | none |
-| `flag_for_human_review` | `employee_id`, `request`, `reason`, `reason_code` | escalation ID, status `open` | writes an escalation record |
+| `flag_for_human_review` | `employee_id`, `request`, `reason`, `reason_code` | escalation ID, status `open`; `INVALID_ESCALATION` error if the request or reason is empty or the code isn't an escalation code | writes an escalation record |
 
-**Deviations from the brief:**
+**Notes on the brief:**
 - `check_request_eligibility` keeps the brief's two-argument signature. Whether it checks
   quantity or refresh is inferred from holdings (§2.1), so the agent never has to classify the
   request type, and a replacement request from someone at their max is never misjudged as
@@ -135,6 +135,10 @@ already permits the request (e.g. "my monitor broke" from someone below their ma
 refresh), it is **approved under normal policy** without verifying the claim. Human review is
 needed only when the claim is the basis for an exception (rule 5).
 
+**New or replacement below the max.** If the employee is below their max, the request is approved
+as one more unit even if the wording could mean a replacement: policy allows it either way, so the
+decision is not ambiguous. Example: max 2, holds one 29-month-old monitor, "I want a new monitor".
+
 ### 4.3 What counts as ambiguous
 
 A request is **escalated rather than decided** when the system cannot decide it reliably from its
@@ -169,7 +173,8 @@ The message to the employee must:
 - state only facts returned by the tools;
 - promise nothing the tools did not confirm: **no delivery dates, no costs, no outcome of a human
   review**;
-- for an approved refresh, say it replaces an existing unit;
+- for basis `refresh`, say it replaces an existing unit; for basis `quantity`, not say that a unit
+  is replaced or must be returned;
 - include the escalation ID when escalated.
 
 Before a response is final, the agent **reflects** on its draft:
