@@ -26,5 +26,6 @@ def test_completed_months(start, as_of, expected):
     assert completed_months(start, as_of) == expected
 
 
-def test_future_start_is_negative():
-    assert completed_months(date(2027, 1, 1), date(2026, 12, 1)) == -1
+def test_future_start_is_rejected():
+    with pytest.raises(ValueError, match="after as_of"):
+        completed_months(date(2027, 1, 1), date(2026, 12, 1))

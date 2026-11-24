@@ -8,19 +8,13 @@ def completed_months(start: date, as_of: date) -> int:
     """Completed calendar months from `start` to `as_of`.
 
     A month completes on the same day-of-month as `start`; if that day doesn't exist in the
-    month, it completes on the month's last day. Negative if `start` is after `as_of`.
-
-    >>> completed_months(date(2024, 12, 1), date(2026, 12, 1))
-    24
-    >>> completed_months(date(2024, 12, 1), date(2026, 11, 30))
-    23
-    >>> completed_months(date(2025, 1, 31), date(2025, 2, 28))
-    1
+    month, it completes on the month's last day. A `start` after `as_of` is rejected: callers
+    check for future dates explicitly (they are unreliable data, not a negative age).
     """
     if start > as_of:
-        return -completed_months(as_of, start)
+        raise ValueError(f"start {start} is after as_of {as_of}")
     months = (as_of.year - start.year) * 12 + (as_of.month - start.month)
-    last_day_of_month = calendar.monthrange(as_of.year, as_of.month)[1]
-    if as_of.day < start.day and as_of.day != last_day_of_month:
+    _, days_in_month = calendar.monthrange(as_of.year, as_of.month)
+    if as_of.day < start.day and as_of.day != days_in_month:
         months -= 1
     return months
