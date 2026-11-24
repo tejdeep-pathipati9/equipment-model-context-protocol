@@ -71,8 +71,10 @@ All date logic takes an explicit `as_of: date`. Nothing calls `datetime.now()` i
 {
   "status": "eligible | not_eligible | needs_review",
   "reason_code": "WITHIN_LIMIT",
-  "basis": "quantity | refresh",
-  "details": { "held": 1, "max": 2, "oldest_age_months": 18, "refresh_months": 24 }
+  "basis": "quantity | refresh | null",
+  "employee_id": "E001", "item": "monitor",
+  "held": 1, "max_qty": 2, "oldest_age_months": null, "refresh_months": 24,
+  "missing": null
 }
 ```
 

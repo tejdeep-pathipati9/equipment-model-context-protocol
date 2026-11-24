@@ -2,7 +2,7 @@
 
 import pytest
 
-from equipment.tools import get_employee_info, get_policy_limits
+from equipment.tools import check_request_eligibility, get_employee_info, get_policy_limits
 
 # ---------------------------------------------------------------- get_employee_info
 
@@ -119,3 +119,95 @@ def test_policy_limits_unknown_role(repo, role):
 
 def test_policy_limits_strips_whitespace(repo):
     assert get_policy_limits(repo, "  manager ")["role"] == "manager"
+
+
+# ---------------------------------------------------------------- check_request_eligibility
+
+
+@pytest.mark.parametrize(
+    ("employee_id", "item", "status", "reason_code"),
+    [
+        ("E001", "monitor", "eligible", "WITHIN_LIMIT"),
+        ("E002", "laptop", "not_eligible", "ROLE_NOT_ELIGIBLE"),
+        ("E003", "monitor", "not_eligible", "REFRESH_NOT_DUE"),
+        ("E004", "laptop", "not_eligible", "REFRESH_NOT_DUE"),
+        ("E006", "laptop", "eligible", "REFRESH_DUE"),
+    ],
+)
+def test_eligibility_seed_employees(repo, as_of, employee_id, item, status, reason_code):
+    result = check_request_eligibility(repo, employee_id, item, as_of)
+
+    assert (result["status"], result["reason_code"]) == (status, reason_code)
+
+
+def test_eligibility_full_result(repo, as_of):
+    assert check_request_eligibility(repo, "E003", "monitor", as_of) == {
+        "employee_id": "E003",
+        "item": "monitor",
+        "status": "not_eligible",
+        "reason_code": "REFRESH_NOT_DUE",
+        "basis": "refresh",
+        "held": 2,
+        "max_qty": 2,
+        "oldest_age_months": 8,
+        "refresh_months": 24,
+        "missing": None,
+    }
+
+
+def test_eligibility_unknown_employee(repo, as_of):
+    result = check_request_eligibility(repo, "E999", "laptop", as_of)
+
+    assert result["error"] == "EMPLOYEE_NOT_FOUND"
+
+
+@pytest.mark.parametrize("bad_id", ["", "   ", None])
+def test_eligibility_empty_employee_id(repo, as_of, bad_id):
+    result = check_request_eligibility(repo, bad_id, "laptop", as_of)
+
+    assert result["error"] == "INVALID_EMPLOYEE_ID"
+
+
+@pytest.mark.parametrize("item", ["standing_desk", "", None])
+def test_eligibility_item_not_in_catalog(repo, as_of, item):
+    result = check_request_eligibility(repo, "E001", item, as_of)
+
+    assert (result["status"], result["reason_code"]) == ("needs_review", "ITEM_NOT_IN_CATALOG")
+
+
+def test_eligibility_normalizes_input(repo, as_of):
+    result = check_request_eligibility(repo, " E006 ", " Laptop ", as_of)
+
+    assert (result["employee_id"], result["item"]) == ("E006", "laptop")
+
+
+def test_eligibility_missing_policy_row(repo, seeded_conn, as_of):
+    seeded_conn.execute("DELETE FROM policies WHERE role = 'employee' AND item = 'monitor'")
+
+    result = check_request_eligibility(repo, "E001", "monitor", as_of)
+
+    assert (result["reason_code"], result["missing"]) == ("RECORDS_INCOMPLETE", "role_policy")
+
+
+def test_eligibility_employee_with_unknown_role(repo, seeded_conn, as_of):
+    seeded_conn.execute("INSERT INTO employees VALUES ('E100', 'Pat Doe', 'ceo', '2020-01-01')")
+
+    result = check_request_eligibility(repo, "E100", "laptop", as_of)
+
+    assert (result["reason_code"], result["missing"]) == ("RECORDS_INCOMPLETE", "role_policy")
+
+
+def test_eligibility_missing_issue_date(repo, seeded_conn, as_of):
+    seeded_conn.execute("UPDATE equipment SET issued_on = NULL WHERE employee_id = 'E006'")
+
+    result = check_request_eligibility(repo, "E006", "laptop", as_of)
+
+    assert (result["reason_code"], result["missing"]) == ("RECORDS_INCOMPLETE", "issue_date")
+
+
+def test_eligibility_new_item_needs_only_data(repo, seeded_conn, as_of):
+    seeded_conn.execute("INSERT INTO policies VALUES ('employee', 'tablet', 1, 24)")
+
+    result = check_request_eligibility(repo, "E001", "tablet", as_of)
+
+    assert result["reason_code"] == "WITHIN_LIMIT"

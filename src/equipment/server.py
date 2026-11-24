@@ -56,6 +56,16 @@ def get_policy_limits(role: str) -> dict[str, Any]:
         return tools.get_policy_limits(repo, role)
 
 
+@mcp.tool()
+def check_request_eligibility(employee_id: str, item: str) -> dict[str, Any]:
+    """Check whether policy and records allow an employee one unit of an item. Returns status
+    (eligible, not_eligible, needs_review), reason_code, basis (quantity = one more unit,
+    refresh = replaces the oldest unit) and the numbers used. If nothing in the catalog matches,
+    pass the item as the employee wrote it."""
+    with repository() as repo:
+        return tools.check_request_eligibility(repo, employee_id, item, as_of())
+
+
 def main() -> None:
     # stdout carries the MCP protocol, so human-readable status goes to stderr only.
     registered = asyncio.run(mcp.list_tools())

@@ -59,3 +59,7 @@ def test_list_policies_sorted_by_item(repo):
 
 def test_list_policies_unknown_role(repo):
     assert repo.list_policies("ceo") == []
+
+
+def test_list_catalog(repo):
+    assert repo.list_catalog() == ["headset", "keyboard_mouse", "laptop", "monitor", "phone"]

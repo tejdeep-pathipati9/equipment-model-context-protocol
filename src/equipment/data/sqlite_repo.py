@@ -39,3 +39,8 @@ class SqliteRepository:
             (role,),
         ).fetchall()
         return [PolicyLimit(*row) for row in rows]
+
+    def list_catalog(self) -> list[str]:
+        """Every item that has a policy for at least one role, sorted."""
+        rows = self._conn.execute("SELECT DISTINCT item FROM policies ORDER BY item").fetchall()
+        return [item for (item,) in rows]
