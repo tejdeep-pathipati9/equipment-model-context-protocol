@@ -135,6 +135,10 @@ already permits the request (e.g. "my monitor broke" from someone below their ma
 refresh), it is **approved under normal policy** without verifying the claim. Human review is
 needed only when the claim is the basis for an exception (rule 5).
 
+**New or replacement below the max.** If the employee is below their max, the request is approved
+as one more unit even if the wording could mean a replacement: policy allows it either way, so the
+decision is not ambiguous. Example: max 2, holds one 29-month-old monitor, "I want a new monitor".
+
 ### 4.3 What counts as ambiguous
 
 A request is **escalated rather than decided** when the system cannot decide it reliably from its
@@ -169,7 +173,8 @@ The message to the employee must:
 - state only facts returned by the tools;
 - promise nothing the tools did not confirm: **no delivery dates, no costs, no outcome of a human
   review**;
-- for an approved refresh, say it replaces an existing unit;
+- for basis `refresh`, say it replaces an existing unit; for basis `quantity`, not say that a unit
+  is replaced or must be returned;
 - include the escalation ID when escalated.
 
 Before a response is final, the agent **reflects** on its draft:
