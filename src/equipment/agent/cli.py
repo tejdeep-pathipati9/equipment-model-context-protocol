@@ -55,7 +55,7 @@ async def run(request: Request) -> int:
             print(f"Foundry error {error.status_code}: {error.message}", file=sys.stderr)
             return 1
         except anthropic.APIConnectionError:
-            print("cannot reach Foundry: check ANTHROPIC_FOUNDRY_RESOURCE", file=sys.stderr)
+            print("cannot reach Foundry: check the endpoint setting in .env", file=sys.stderr)
             return 1
     print(format_decision(result.decision))
     return 0
