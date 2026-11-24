@@ -15,7 +15,8 @@ from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
-from mcp import Client, StdioServerParameters
+from anthropic.types import ToolParam
+from mcp import Client, StdioServerParameters, Tool
 
 from equipment import config
 from equipment.config import Transport
@@ -66,6 +67,14 @@ async def connect() -> AsyncGenerator[Client]:
                 f"no MCP server at {target}; start it with `uv run server`"
             ) from error
         yield client
+
+
+def anthropic_tools(tools: list[Tool]) -> list[ToolParam]:
+    """MCP tools in the format the Anthropic API expects."""
+    return [
+        {"name": t.name, "description": t.description or "", "input_schema": t.input_schema}
+        for t in tools
+    ]
 
 
 async def run(tool: str | None, arguments: dict[str, Any]) -> None:
