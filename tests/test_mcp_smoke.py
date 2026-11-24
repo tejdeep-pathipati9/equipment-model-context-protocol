@@ -1,34 +1,20 @@
-"""Smoke test: real MCP client -> real server subprocess over stdio. No LLM."""
+"""Smoke test: real MCP client -> real server, over stdio and Streamable HTTP. No LLM."""
 
 import asyncio
 import sqlite3
 from contextlib import closing
 
-import pytest
-from mcp import Client
-
-from equipment.agent.mcp_client import result_payload, server_params
-from equipment.data.seed import create_schema, seed_data
-
-
-@pytest.fixture
-def server_db(db_path, monkeypatch):
-    """Seeded DB file the server subprocess can see (EQUIP_DB_PATH, AS_OF_DATE forwarded)."""
-    with closing(sqlite3.connect(db_path)) as conn, conn:  # `with conn` commits
-        create_schema(conn)
-        seed_data(conn)
-    monkeypatch.setenv("AS_OF_DATE", "2026-12-01")
-    return db_path
+from equipment.agent.mcp_client import connect, result_payload
 
 
 async def _session(calls):
-    async with Client(server_params()) as client:
+    async with connect() as client:
         listing = await client.list_tools()
         results = [await client.call_tool(name, args) for name, args in calls]
         return [t.name for t in listing.tools], results
 
 
-def test_server_registers_tools(server_db):
+def test_server_registers_tools(mcp_server):
     names, _ = asyncio.run(_session([]))
     assert names == [
         "get_employee_info",
@@ -38,7 +24,7 @@ def test_server_registers_tools(server_db):
     ]
 
 
-def test_get_employee_info_over_mcp(server_db):
+def test_get_employee_info_over_mcp(mcp_server):
     _, [result] = asyncio.run(_session([("get_employee_info", {"employee_id": "E001"})]))
 
     assert not result.is_error
@@ -48,12 +34,12 @@ def test_get_employee_info_over_mcp(server_db):
     assert [unit["item"] for unit in info["equipment"]] == ["laptop", "monitor"]
 
 
-def test_get_employee_info_unknown_id_over_mcp(server_db):
+def test_get_employee_info_unknown_id_over_mcp(mcp_server):
     _, [result] = asyncio.run(_session([("get_employee_info", {"employee_id": "E999"})]))
     assert result_payload(result)["error"] == "EMPLOYEE_NOT_FOUND"
 
 
-def test_get_policy_limits_over_mcp(server_db):
+def test_get_policy_limits_over_mcp(mcp_server):
     _, [result] = asyncio.run(_session([("get_policy_limits", {"role": "contractor"})]))
 
     assert not result.is_error
@@ -61,7 +47,7 @@ def test_get_policy_limits_over_mcp(server_db):
     assert {"item": "laptop", "max_qty": 0, "refresh_months": 0} in limits
 
 
-def test_check_request_eligibility_over_mcp(server_db):
+def test_check_request_eligibility_over_mcp(mcp_server):
     call = ("check_request_eligibility", {"employee_id": "E006", "item": "laptop"})
     _, [result] = asyncio.run(_session([call]))
 
@@ -70,7 +56,7 @@ def test_check_request_eligibility_over_mcp(server_db):
     assert (payload["reason_code"], payload["oldest_age_months"]) == ("REFRESH_DUE", 43)
 
 
-def test_flag_for_human_review_over_mcp(server_db):
+def test_flag_for_human_review_over_mcp(mcp_server):
     args = {
         "employee_id": "E003",
         "request": "One of my monitors died",
@@ -80,6 +66,6 @@ def test_flag_for_human_review_over_mcp(server_db):
     _, [result] = asyncio.run(_session([("flag_for_human_review", args)]))
 
     assert not result.is_error
-    with closing(sqlite3.connect(server_db)) as conn:
+    with closing(sqlite3.connect(mcp_server)) as conn:
         saved = conn.execute("SELECT id, employee_id, reason_code FROM escalations").fetchall()
     assert saved == [(result_payload(result)["escalation_id"], "E003", "EXCEPTION_REQUEST")]

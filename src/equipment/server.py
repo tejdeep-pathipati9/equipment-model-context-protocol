@@ -1,4 +1,4 @@
-"""MCP server (stdio transport) + composition root.
+"""MCP server (Streamable HTTP or stdio) + composition root.
 
 Run with `python -m equipment.server` (or `uv run server`). Wrappers here only pass arguments
 through; business logic lives in `equipment.tools`. This is the only place that reads config
@@ -16,7 +16,8 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from equipment import tools
+from equipment import config, tools
+from equipment.config import Transport
 from equipment.data.seed import db_path
 from equipment.data.sqlite_repo import SqliteRepository
 
@@ -81,15 +82,20 @@ def flag_for_human_review(
 
 
 def main() -> None:
-    # stdout carries the MCP protocol, so human-readable status goes to stderr only.
+    # With stdio, stdout carries the MCP protocol, so status goes to stderr only.
+    transport = config.transport()
     registered = asyncio.run(mcp.list_tools())
-    log(f"equipment MCP server ready on stdio, {len(registered)} tool(s):")
+    log(f"equipment MCP server on {transport}, {len(registered)} tool(s):")
     for tool in registered:
         log(f"  - {tool.name}")
     log(f"db={db_path()} as_of={as_of()}")
-    log("waiting for a client (JSON-RPC on stdin); Ctrl+C to stop")
     try:
-        mcp.run()  # stdio
+        if transport is Transport.STDIO:
+            log("waiting for a client (JSON-RPC on stdin); Ctrl+C to stop")
+            mcp.run("stdio")
+        else:
+            log(f"listening on http://{config.host()}:{config.port()}/mcp; Ctrl+C to stop")
+            mcp.run("streamable-http", host=config.host(), port=config.port())
     except KeyboardInterrupt:
         log("stopped")
 
