@@ -1,10 +1,12 @@
 """Shared pytest fixtures."""
 
 import sqlite3
+from datetime import date
 
 import pytest
 
-from equipment.data.seed import create_schema
+from equipment.data.seed import create_schema, seed_data
+from equipment.data.sqlite_repo import SqliteRepository
 
 
 @pytest.fixture
@@ -22,3 +24,21 @@ def conn(db_path):
     create_schema(connection)
     yield connection
     connection.close()
+
+
+@pytest.fixture
+def seeded_conn(conn):
+    """Fresh DB with the schema and the demo seed data."""
+    seed_data(conn)
+    return conn
+
+
+@pytest.fixture
+def as_of():
+    """Fixed 'today' used by the demo and tests (docs/requirements.md 2.2)."""
+    return date(2026, 12, 1)
+
+
+@pytest.fixture
+def repo(seeded_conn):
+    return SqliteRepository(seeded_conn)
