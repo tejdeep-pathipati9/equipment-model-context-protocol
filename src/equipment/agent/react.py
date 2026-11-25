@@ -9,13 +9,24 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from anthropic import transform_schema
 from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
 from mcp import Client
+from pydantic import ValidationError
 
 from equipment.agent.llm import LLMClient
 from equipment.agent.mcp_client import anthropic_tools, result_payload
 from equipment.agent.prompts import REJECTED, SYSTEM
-from equipment.agent.types import AgentResult, Request, Review, Reviewer, Step, Stop
+from equipment.agent.types import (
+    AgentResult,
+    Draft,
+    Request,
+    Review,
+    Reviewer,
+    Step,
+    Stop,
+    validation_issues,
+)
 from equipment.domain.models import Decision, ReasonCode
 
 SUBMIT = "submit_decision"
@@ -23,18 +34,7 @@ SUBMIT_TOOL: ToolParam = {
     "name": SUBMIT,
     "description": "Submit the final decision. Call it once, on its own, after the other tools.",
     "strict": True,
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "decision": {"type": "string", "enum": list(Decision)},
-            "reason_code": {"type": "string", "enum": list(ReasonCode)},
-            "item": {"type": ["string", "null"]},
-            "message_to_employee": {"type": "string"},
-            "escalation_id": {"type": ["string", "null"]},
-        },
-        "required": ["decision", "reason_code", "item", "message_to_employee", "escalation_id"],
-        "additionalProperties": False,
-    },
+    "input_schema": transform_schema(Draft),
 }
 FLAG = "flag_for_human_review"
 REMINDER = f"Call {SUBMIT} with your final decision."
@@ -85,15 +85,17 @@ async def run_agent(
 
         if len(calls) == 1 and calls[0][1].name == SUBMIT:
             [(thought, call)] = calls
-            draft = dict(call.input)
-            review = await reviewer(request, draft, steps) if reviewer else None
+            submitted = dict(call.input)
+            draft, review = _parse(submitted)
+            if draft and reviewer:
+                review = await reviewer(request, draft, steps)
             issues = review.issues if review else []
             outcome = {"accepted": False, "issues": issues} if issues else {"accepted": True}
-            record(Step(thought, SUBMIT, draft, outcome, bool(issues)))
+            record(Step(thought, SUBMIT, submitted, outcome, bool(issues)))
             if review:
                 reviews.append(review)
                 on_review(review)
-            if not issues:
+            if draft and not issues:
                 return AgentResult(draft, Stop.SUBMITTED, steps, reviews)
             if reviews[-1].no_verdict or len(reviews) > max_revisions:
                 return await give_up(
@@ -127,6 +129,14 @@ async def run_agent(
         ReasonCode.AGENT_STEP_LIMIT,
         "The agent reached its step limit without a decision.",
     )
+
+
+def _parse(submitted: dict[str, Any]) -> tuple[Draft | None, Review | None]:
+    """A valid draft, or a review that rejects it, e.g. for decision "maybe"."""
+    try:
+        return Draft.model_validate(submitted), None
+    except ValidationError as error:
+        return None, Review(submitted, validation_issues(error))
 
 
 def _rejected(tool_use_id: str, rejection: dict[str, Any]) -> ToolResultBlockParam:
@@ -195,7 +205,7 @@ async def escalate(
     reason: str,
     steps: list[Step],
     record: Callable[[Step], None],
-) -> dict[str, Any]:
+) -> Draft:
     """The safe decision, made by code. Keeps an escalation already saved in this run, so the
     reply always matches the one record the reviewer sees."""
     flagged = saved_escalation(steps)
@@ -211,13 +221,13 @@ async def escalate(
         )
     else:
         message = "Your request could not be decided or recorded. Please submit it again."
-    return {
-        "decision": Decision.ESCALATE,
-        "reason_code": reason_code,
-        "item": None,
-        "message_to_employee": message,
-        "escalation_id": escalation_id,
-    }
+    return Draft(
+        decision=Decision.ESCALATE,
+        reason_code=reason_code,
+        item=None,
+        message_to_employee=message,
+        escalation_id=escalation_id,
+    )
 
 
 async def _flag(

@@ -5,7 +5,42 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-Draft = dict[str, Any]  # the input of submit_decision
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from equipment.domain.models import Decision, ReasonCode
+
+# ---------------------------------------------------------------- model outputs
+
+
+class ModelOutput(BaseModel):
+    """What the model submits. Validated here because a strict tool can still be cut off."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, str_strip_whitespace=True)
+
+
+class Draft(ModelOutput):
+    decision: Decision
+    reason_code: ReasonCode
+    item: str | None
+    message_to_employee: str = Field(min_length=1)
+    escalation_id: str | None
+
+
+class CriticIssue(ModelOutput):
+    quote: str = Field(description="exact words from the draft")
+    problem: str
+
+
+class CriticReview(ModelOutput):
+    issues: list[CriticIssue]
+
+
+def validation_issues(error: ValidationError) -> list[str]:
+    """e.g. "decision: Input should be 'approve', 'deny' or 'escalate'"."""
+    return [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors()]
+
+
+# ---------------------------------------------------------------- the run
 
 
 @dataclass(frozen=True)
@@ -27,7 +62,7 @@ class Step:
 class Review:
     """The checks of one draft. The critic only runs once the code check passes."""
 
-    draft: Draft
+    draft: dict[str, Any]  # as submitted; it may be invalid
     code_issues: list[str]
     critic_issues: list[str] | None = None  # None = not run, or no verdict
 
@@ -69,7 +104,7 @@ class Outcome(StrEnum):
 
 @dataclass
 class AgentResult:
-    decision: dict[str, Any]
+    decision: Draft
     stop: Stop
     steps: list[Step] = field(default_factory=list)
     reviews: list[Review] = field(default_factory=list)
@@ -78,6 +113,7 @@ class AgentResult:
     def outcome(self) -> Outcome:
         if not self.reviews:
             return Outcome.SKIPPED
-        if not self.reviews[-1].passed:
+        if self.stop != Stop.SUBMITTED:
             return Outcome.ESCALATED
-        return Outcome.CONFIRMED if len(self.reviews) == 1 else Outcome.REVISED
+        rejected = any(review.issues for review in self.reviews)
+        return Outcome.REVISED if rejected else Outcome.CONFIRMED

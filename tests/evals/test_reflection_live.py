@@ -20,7 +20,7 @@ from equipment.agent.prompts import SYSTEM
 from equipment.agent.react import run_agent
 from equipment.agent.reflection import check_draft, critique, review_draft
 from equipment.agent.trace import format_outcome, format_review, format_step
-from equipment.agent.types import Outcome, Request, Step
+from equipment.agent.types import Draft, Outcome, Request, Step
 from equipment.data.sqlite_repo import SqliteRepository
 
 pytestmark = pytest.mark.eval
@@ -43,17 +43,17 @@ def deny(item, reason_code, message):
 
 
 def escalate(item, reason_code, message):
-    return _draft("escalate", reason_code, item, message) | {"escalation_id": "ESC-1"}
+    return _draft("escalate", reason_code, item, message, "ESC-1")
 
 
-def _draft(decision, reason_code, item, message):
-    return {
-        "decision": decision,
-        "reason_code": reason_code,
-        "item": item,
-        "message_to_employee": message,
-        "escalation_id": None,
-    }
+def _draft(decision, reason_code, item, message, escalation_id=None):
+    return Draft(
+        decision=decision,
+        reason_code=reason_code,
+        item=item,
+        message_to_employee=message,
+        escalation_id=escalation_id,
+    )
 
 
 @pytest.fixture
@@ -63,7 +63,7 @@ def steps_for(server_db):
     repo = SqliteRepository(conn)
 
     def build(request, draft):
-        as_of, employee, item = date(2026, 12, 1), request.employee_id, draft["item"]
+        as_of, employee, item = date(2026, 12, 1), request.employee_id, draft.item
         info = tools.get_employee_info(repo, employee, as_of)
         verdict = tools.check_request_eligibility(repo, employee, item, as_of)
         steps = [
@@ -76,8 +76,8 @@ def steps_for(server_db):
                 False,
             ),
         ]
-        if draft["decision"] == "escalate":
-            arguments = {"employee_id": employee, "reason_code": draft["reason_code"]}
+        if draft.decision == "escalate":
+            arguments = {"employee_id": employee, "reason_code": draft.reason_code}
             saved = {"escalation_id": "ESC-1", "status": "open"}
             steps.append(Step("", "flag_for_human_review", arguments, saved, False))
         return steps
@@ -267,7 +267,7 @@ def test_critic_catches_a_bad_draft(request_, draft, steps_for):
 
     issues = asyncio.run(critique(FoundryClient.from_env(), request_, draft, steps))
 
-    print(f"\n{draft['message_to_employee']}\n  -> {issues}")
+    print(f"\n{draft.message_to_employee}\n  -> {issues}")
     assert issues
 
 
@@ -278,7 +278,7 @@ def test_critic_passes_a_good_draft(request_, draft, steps_for):
 
     issues = asyncio.run(critique(FoundryClient.from_env(), request_, draft, steps))
 
-    print(f"\n{draft['message_to_employee']}\n  -> {issues}")
+    print(f"\n{draft.message_to_employee}\n  -> {issues}")
     assert issues == []
 
 
@@ -306,7 +306,7 @@ def look_up(request, item):
 
 
 def submit(draft):
-    return planted_turn("toolu_planted2", "submit_decision", draft)
+    return planted_turn("toolu_planted2", "submit_decision", draft.model_dump(mode="json"))
 
 
 @pytest.fixture
@@ -347,7 +347,7 @@ def test_wording_is_fixed_without_another_lookup(run_planted):
 
     result = run_planted(SECOND_MONITOR, look_up(SECOND_MONITOR, "monitor"), submit(bad))
 
-    assert (result.outcome, result.decision["decision"]) == (Outcome.REVISED, "approve")
+    assert (result.outcome, result.decision.decision) == (Outcome.REVISED, "approve")
     assert set(actions_after_rejection(result)) == {"submit_decision"}
 
 
@@ -356,7 +356,7 @@ def test_missing_fact_is_looked_up(run_planted):
 
     result = run_planted(SECOND_MONITOR, submit(guess))
 
-    assert (result.outcome, result.decision["decision"]) == (Outcome.REVISED, "approve")
+    assert (result.outcome, result.decision.decision) == (Outcome.REVISED, "approve")
     assert "check_request_eligibility" in actions_after_rejection(result)
 
 
@@ -365,7 +365,7 @@ def test_wrong_decision_is_corrected(run_planted):
 
     result = run_planted(CONTRACTOR_LAPTOP, look_up(CONTRACTOR_LAPTOP, "laptop"), submit(wrong))
 
-    assert (result.decision["decision"], result.decision["reason_code"]) == (
+    assert (result.decision.decision, result.decision.reason_code) == (
         "deny",
         "ROLE_NOT_ELIGIBLE",
     )
@@ -376,7 +376,7 @@ def test_wrong_denial_becomes_an_escalation(run_planted):
 
     result = run_planted(DEAD_MONITOR, look_up(DEAD_MONITOR, "monitor"), submit(wrong))
 
-    assert (result.outcome, result.decision["reason_code"]) == (
+    assert (result.outcome, result.decision.reason_code) == (
         Outcome.REVISED,
         "EXCEPTION_REQUEST",
     )

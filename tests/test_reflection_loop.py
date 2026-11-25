@@ -13,7 +13,7 @@ from equipment.agent.mcp_client import connect
 from equipment.agent.prompts import CRITIC, REJECTED
 from equipment.agent.react import run_agent
 from equipment.agent.reflection import review_draft
-from equipment.agent.types import Outcome, Request, Review, Stop
+from equipment.agent.types import Draft, Outcome, Request, Review, Stop
 
 GOOD = {
     "decision": "approve",
@@ -55,7 +55,7 @@ class FakeReviewer:
 
     async def __call__(self, request, draft, steps):
         self.calls.append((request, draft, list(steps)))
-        return Review(draft, [], self.verdicts.pop(0))
+        return Review(draft.model_dump(mode="json"), [], self.verdicts.pop(0))
 
 
 @pytest.fixture
@@ -88,10 +88,10 @@ def test_accepted_first_draft_is_confirmed(agent):
     assert (result.stop, result.outcome, result.decision) == (
         Stop.SUBMITTED,
         Outcome.CONFIRMED,
-        GOOD,
+        Draft(**GOOD),
     )
     [(request, draft, steps)] = reviewer.calls
-    assert (request, draft) == (REQUEST, GOOD)
+    assert (request, draft) == (REQUEST, Draft(**GOOD))
     assert [step.action for step in steps] == ["check_request_eligibility"]
 
 
@@ -105,7 +105,7 @@ def test_rejected_draft_goes_back_to_the_model_with_its_issues(agent):
     issues, rules = rejection["content"]
     assert json.loads(issues["text"]) == {"accepted": False, "issues": [ISSUE]}
     assert rules["text"] == REJECTED
-    assert (result.outcome, result.decision) == (Outcome.REVISED, GOOD)
+    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
 
 
 def test_wording_fix_needs_one_more_turn_and_no_lookup(agent):
@@ -157,7 +157,7 @@ def test_third_rejected_draft_escalates(agent, server_db):
 
     [(id, reason_code, reason)] = saved(server_db)
     assert (result.stop, result.outcome) == (Stop.REFLECTION_FAILED, Outcome.ESCALATED)
-    assert (result.decision["escalation_id"], reason_code) == (id, "REFLECTION_FAILED")
+    assert (result.decision.escalation_id, reason_code) == (id, "REFLECTION_FAILED")
     assert "by Friday" in reason
     assert llm.replies == []
 
@@ -181,9 +181,9 @@ def test_failed_reflection_keeps_a_saved_escalation(agent, server_db):
     result = agent(llm, FakeReviewer([ISSUE]), max_revisions=0)
 
     [(id, reason_code, _)] = saved(server_db)
-    assert result.decision["escalation_id"] == id
-    assert result.decision["reason_code"] == reason_code == "EXCEPTION_REQUEST"
-    assert "Friday" not in result.decision["message_to_employee"]
+    assert result.decision.escalation_id == id
+    assert result.decision.reason_code == reason_code == "EXCEPTION_REQUEST"
+    assert "Friday" not in result.decision.message_to_employee
 
 
 def test_revisions_share_the_step_limit(agent):
@@ -192,7 +192,7 @@ def test_revisions_share_the_step_limit(agent):
     result = agent(llm, FakeReviewer([ISSUE]), max_steps=3)
 
     assert (result.stop, result.outcome) == (Stop.STEP_LIMIT, Outcome.ESCALATED)
-    assert result.decision["reason_code"] == "AGENT_STEP_LIMIT"
+    assert result.decision.reason_code == "AGENT_STEP_LIMIT"
 
 
 def test_refusal_after_a_rejection_escalates(agent):
@@ -215,7 +215,49 @@ def test_decision_made_by_code_is_not_reviewed(agent):
 def test_without_a_reviewer_the_first_draft_is_final(agent):
     result = agent(FakeLLM(submit(BAD)), None)
 
-    assert (result.stop, result.outcome, result.decision) == (Stop.SUBMITTED, Outcome.SKIPPED, BAD)
+    assert (result.stop, result.outcome, result.decision) == (
+        Stop.SUBMITTED,
+        Outcome.SKIPPED,
+        Draft(**BAD),
+    )
+
+
+# ---------------------------------------------------------------- invalid drafts
+
+INVALID = [
+    pytest.param(GOOD | {"decision": "maybe"}, "decision", id="unknown decision"),
+    pytest.param(GOOD | {"reason_code": "BECAUSE"}, "reason_code", id="unknown reason code"),
+    pytest.param(GOOD | {"message_to_employee": 123}, "message_to_employee", id="not text"),
+    pytest.param(GOOD | {"message_to_employee": "  "}, "message_to_employee", id="empty message"),
+    pytest.param(GOOD | {"priority": "high"}, "priority", id="extra field"),
+    pytest.param({"decision": "approve"}, "reason_code", id="cut off"),
+]
+
+
+@pytest.mark.parametrize(("invalid", "field"), INVALID)
+def test_invalid_draft_goes_back_to_the_model(agent, invalid, field):
+    reviewer = FakeReviewer([])
+
+    result = agent(FakeLLM(submit(invalid, "s1"), submit(GOOD, "s2")), reviewer)
+
+    assert any(field in issue for issue in result.steps[0].observation["issues"])
+    assert result.reviews[0].draft == invalid
+    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
+    assert len(reviewer.calls) == 1  # the invalid draft never reaches the reviewer
+
+
+def test_invalid_draft_is_rejected_without_a_reviewer(agent):
+    llm = FakeLLM(submit(GOOD | {"decision": "maybe"}), submit(GOOD))
+
+    result = agent(llm, None)
+
+    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
+
+
+def test_always_invalid_drafts_escalate(agent):
+    llm = FakeLLM(*[submit({"decision": "approve"})] * 3)
+
+    assert agent(llm, FakeReviewer()).stop == Stop.REFLECTION_FAILED
 
 
 # ---------------------------------------------------------------- with the real review
@@ -245,7 +287,7 @@ def test_missing_lookup_is_done_before_the_draft_is_accepted(agent):
         "submit_decision",
     ]
     assert "no eligibility result" in result.steps[0].observation["issues"][0]
-    assert (result.outcome, result.decision) == (Outcome.REVISED, GOOD)
+    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
 
 
 def test_approval_can_become_a_real_escalation(agent, server_db):
@@ -276,7 +318,7 @@ def test_approval_can_become_a_real_escalation(agent, server_db):
     result = agent(llm, partial(review_draft, llm))
 
     assert (result.stop, result.outcome) == (Stop.SUBMITTED, Outcome.REVISED)
-    assert (result.decision["decision"], result.decision["reason_code"]) == (
+    assert (result.decision.decision, result.decision.reason_code) == (
         "escalate",
         "VAGUE_REQUEST",
     )
@@ -288,6 +330,6 @@ def test_saved_escalation_cannot_become_an_approval(agent, server_db):
         agent, look_up(), flag(), submit(GOOD, "s1"), submit(GOOD, "s2"), submit(GOOD, "s3")
     )
 
-    assert result.decision["decision"] == "escalate"
+    assert result.decision.decision == "escalate"
     assert len(saved(server_db)) == 1
     assert all("already escalated" in review.issues[0] for review in result.reviews)

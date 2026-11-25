@@ -1,9 +1,8 @@
 """Thought / Action / Observation and reflection printer, compact enough to screenshot."""
 
 import json
-from typing import Any
 
-from equipment.agent.types import AgentResult, Outcome, Review, Step
+from equipment.agent.types import AgentResult, Draft, Outcome, Review, Step
 
 
 def format_step(number: int, step: Step) -> str:
@@ -57,14 +56,14 @@ def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
-def format_decision(decision: dict[str, Any]) -> str:
+def format_decision(decision: Draft) -> str:
     rule = "=" * 72
     lines = [
         rule,
-        f"Decision:    {str(decision['decision']).upper()} ({decision['reason_code']})",
-        f"Item:        {decision['item'] or '-'}",
-        f"Escalation:  {decision['escalation_id'] or '-'}",
-        f"Message:     {decision['message_to_employee']}",
+        f"Decision:    {decision.decision.upper()} ({decision.reason_code})",
+        f"Item:        {decision.item or '-'}",
+        f"Escalation:  {decision.escalation_id or '-'}",
+        f"Message:     {decision.message_to_employee}",
         rule,
     ]
     return "\n".join(lines)

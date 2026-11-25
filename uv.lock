@@ -238,6 +238,7 @@ source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "mcp" },
+    { name = "pydantic" },
 ]
 
 [package.dev-dependencies]
@@ -250,6 +251,7 @@ dev = [
 requires-dist = [
     { name = "anthropic" },
     { name = "mcp" },
+    { name = "pydantic", specifier = ">=2.14.4" },
 ]
 
 [package.metadata.requires-dev]

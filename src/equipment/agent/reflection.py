@@ -6,16 +6,17 @@ A code check, then a critic. The ReAct loop (react.py) decides what happens to a
 import json
 from typing import Any
 
+from anthropic import transform_schema
 from anthropic.types import Message, ToolParam
+from pydantic import ValidationError
 
 from equipment.agent.llm import LLMClient
 from equipment.agent.prompts import CRITIC
 from equipment.agent.react import SUBMIT, saved_escalation
-from equipment.agent.types import Draft, Request, Review, Step
+from equipment.agent.types import CriticReview, Draft, Request, Review, Step
 from equipment.domain.models import Basis, Decision, ReasonCode, Status
 
 ELIGIBILITY = "check_request_eligibility"
-REQUIRED = ("decision", "reason_code", "item", "message_to_employee", "escalation_id")
 VERDICTS = {Decision.APPROVE: Status.ELIGIBLE, Decision.DENY: Status.NOT_ELIGIBLE}
 
 REVIEW = "submit_review"
@@ -23,34 +24,17 @@ REVIEW_TOOL: ToolParam = {
     "name": REVIEW,
     "description": "Submit the review of the draft. An empty list means the draft is correct.",
     "strict": True,
-    "input_schema": {
-        "type": "object",
-        "properties": {
-            "issues": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "quote": {"type": "string", "description": "exact words from the draft"},
-                        "problem": {"type": "string"},
-                    },
-                    "required": ["quote", "problem"],
-                    "additionalProperties": False,
-                },
-            }
-        },
-        "required": ["issues"],
-        "additionalProperties": False,
-    },
+    "input_schema": transform_schema(CriticReview),
 }
 
 
 async def review_draft(llm: LLMClient, request: Request, draft: Draft, steps: list[Step]) -> Review:
     """Both checks of one draft, e.g. code check passes, critic finds "by Friday"."""
+    submitted = draft.model_dump(mode="json")
     code_issues = check_draft(draft, steps)
     if code_issues:
-        return Review(draft, code_issues)
-    return Review(draft, [], await critique(llm, request, draft, steps))
+        return Review(submitted, code_issues)
+    return Review(submitted, [], await critique(llm, request, draft, steps))
 
 
 # ---------------------------------------------------------------- code check
@@ -58,17 +42,14 @@ async def review_draft(llm: LLMClient, request: Request, draft: Draft, steps: li
 
 def check_draft(draft: Draft, steps: list[Step]) -> list[str]:
     """Problems code can prove, e.g. approve when the tool said not_eligible. Empty = pass."""
-    missing = [name for name in REQUIRED if name not in draft]
-    if missing:  # a cut-off reply can leave fields out
-        return [f"the draft is incomplete, missing: {', '.join(missing)}"]
-    if draft["decision"] == Decision.ESCALATE:
+    if draft.decision == Decision.ESCALATE:
         return _check_escalation(draft, steps)
     return _check_verdict(draft, steps)
 
 
 def _check_verdict(draft: Draft, steps: list[Step]) -> list[str]:
     """Approve or deny must match the last eligibility result."""
-    decision, code = draft["decision"], draft["reason_code"]
+    decision, code = draft.decision, draft.reason_code
     flagged = saved_escalation(steps)
     if flagged:
         saved = flagged.observation["escalation_id"]
@@ -79,10 +60,10 @@ def _check_verdict(draft: Draft, steps: list[Step]) -> list[str]:
         return [f"{decision}, but there is no eligibility result"]
 
     issues = []
-    if draft["escalation_id"] is not None:
-        issues.append(f"{decision}, but escalation_id is {draft['escalation_id']}")
-    if draft["item"] != result["item"]:
-        issues.append(f"item is {draft['item']}, but eligibility was checked for {result['item']}")
+    if draft.escalation_id is not None:
+        issues.append(f"{decision}, but escalation_id is {draft.escalation_id}")
+    if draft.item != result["item"]:
+        issues.append(f"item is {draft.item}, but eligibility was checked for {result['item']}")
     if decision == Decision.DENY and code == ReasonCode.AT_MAX_QUANTITY:
         if result["basis"] != Basis.REFRESH:
             issues.append(f"{code} needs basis refresh, but the basis is {result['basis']}")
@@ -101,11 +82,11 @@ def _check_escalation(draft: Draft, steps: list[Step]) -> list[str]:
 
     saved_id, saved_code = flagged.observation["escalation_id"], flagged.arguments["reason_code"]
     issues = []
-    if draft["escalation_id"] != saved_id:
-        issues.append(f"escalation_id is {draft['escalation_id']}, but {saved_id} was saved")
-    if draft["reason_code"] != saved_code:
-        issues.append(f"reason code is {draft['reason_code']}, but {saved_code} was saved")
-    if saved_id not in draft["message_to_employee"]:
+    if draft.escalation_id != saved_id:
+        issues.append(f"escalation_id is {draft.escalation_id}, but {saved_id} was saved")
+    if draft.reason_code != saved_code:
+        issues.append(f"reason code is {draft.reason_code}, but {saved_code} was saved")
+    if saved_id not in draft.message_to_employee:
         issues.append(f"the message does not mention {saved_id}")
     return issues
 
@@ -126,14 +107,15 @@ async def critique(
     llm: LLMClient, request: Request, draft: Draft, steps: list[Step]
 ) -> list[str] | None:
     """The critic's issues, e.g. '"by Friday": ...'. Empty = pass, None = no verdict."""
-    content = json.dumps(_evidence(request, steps) | {"draft": draft})
+    content = json.dumps(_evidence(request, steps) | {"draft": draft.model_dump(mode="json")})
     reply = await llm.create(
         system=CRITIC, messages=[{"role": "user", "content": content}], tools=[REVIEW_TOOL]
     )
-    review = _tool_input(reply, REVIEW)
-    if review is None:
+    try:
+        review = CriticReview.model_validate(_tool_input(reply, REVIEW))
+    except ValidationError:  # also a refusal or a cut-off reply, which have no tool input
         return None
-    return [f'"{issue["quote"]}": {issue["problem"]}' for issue in review["issues"]]
+    return [f'"{issue.quote}": {issue.problem}' for issue in review.issues]
 
 
 def _evidence(request: Request, steps: list[Step]) -> dict[str, Any]:

@@ -18,28 +18,35 @@ from equipment.agent.prompts import (
 )
 from equipment.agent.reflection import REVIEW_TOOL, check_draft, critique, review_draft
 from equipment.agent.trace import format_outcome, format_review
-from equipment.agent.types import AgentResult, Request, Review, Step, Stop
+from equipment.agent.types import AgentResult, Draft, Request, Review, Step, Stop
 from equipment.domain.models import Item
 
 
 def draft(**changes):
-    return {
-        "decision": "approve",
-        "reason_code": "WITHIN_LIMIT",
-        "item": "monitor",
-        "message_to_employee": "Approved: one more monitor.",
-        "escalation_id": None,
-    } | changes
+    return Draft(
+        **{
+            "decision": "approve",
+            "reason_code": "WITHIN_LIMIT",
+            "item": "monitor",
+            "message_to_employee": "Approved: one more monitor.",
+            "escalation_id": None,
+        }
+        | changes
+    )
+
+
+def as_json(proposed):
+    return proposed.model_dump(mode="json")
 
 
 def escalation(**changes):
-    return (
-        draft(
-            decision="escalate",
-            reason_code="EXCEPTION_REQUEST",
-            message_to_employee="A human reviewer will look at this (ESC-1).",
-            escalation_id="ESC-1",
-        )
+    return draft(
+        **{
+            "decision": "escalate",
+            "reason_code": "EXCEPTION_REQUEST",
+            "message_to_employee": "A human reviewer will look at this (ESC-1).",
+            "escalation_id": "ESC-1",
+        }
         | changes
     )
 
@@ -170,12 +177,6 @@ def test_failed_tool_results_do_not_count():
     assert "no eligibility" in check_draft(draft(), [unknown, text, blocked])[0]
 
 
-def test_cut_off_draft_is_a_problem_not_a_crash():
-    [issue] = check_draft({"decision": "approve"}, [eligibility()])
-
-    assert "reason_code" in issue and "message_to_employee" in issue
-
-
 def test_check_reports_every_problem():
     proposed = draft(reason_code="REFRESH_DUE", item="laptop")
 
@@ -193,7 +194,7 @@ def review(*issues):
 
 
 def submit(proposed):
-    return reply(call("submit_decision", proposed))
+    return reply(call("submit_decision", as_json(proposed)))
 
 
 def run_critique(llm, proposed=None, steps=None):
@@ -212,7 +213,7 @@ def test_critic_issue_shows_the_quote_and_the_problem():
 
 def test_critic_sees_request_draft_and_results_but_not_thoughts():
     step = Step("SECRET REASONING", "get_employee_info", {"employee_id": "E001"}, {"n": 1}, False)
-    submitted = Step("SECRET REASONING", "submit_decision", draft(), {"accepted": True}, False)
+    submitted = Step("SECRET REASONING", "submit_decision", {}, {"accepted": True}, False)
     llm = FakeLLM(review())
 
     run_critique(llm, steps=[step, submitted])
@@ -224,7 +225,7 @@ def test_critic_sees_request_draft_and_results_but_not_thoughts():
         "tool_results": [
             {"tool": "get_employee_info", "arguments": {"employee_id": "E001"}, "result": {"n": 1}}
         ],
-        "draft": draft(),
+        "draft": as_json(draft()),
     }
     assert sent["system"] == CRITIC
     assert sent["tools"] == [REVIEW_TOOL]
@@ -237,6 +238,13 @@ def test_critic_sees_request_draft_and_results_but_not_thoughts():
         pytest.param(reply(thought("Looks fine."), stop="end_turn"), id="text only"),
         pytest.param(reply(call("submit_review", {}), stop="max_tokens"), id="cut off"),
         pytest.param(reply(call("other_tool", {})), id="wrong tool"),
+        pytest.param(reply(call("submit_review", {})), id="no issues field"),
+        pytest.param(
+            reply(call("submit_review", {"issues": ["bad"]})), id="issue is not an object"
+        ),
+        pytest.param(
+            reply(call("submit_review", {"issues": [{"quote": "x"}]})), id="issue without a problem"
+        ),
     ],
 )
 def test_critic_without_a_verdict_is_not_a_pass(no_verdict):
@@ -275,6 +283,7 @@ def run_review(llm, proposed, steps):
 def test_review_runs_both_checks():
     current = run_review(FakeLLM(review(BY_FRIDAY)), draft(), [eligibility()])
 
+    assert current.draft == as_json(draft())
     assert (current.code_issues, len(current.critic_issues)) == ([], 1)
     assert current.passed is False
 
@@ -288,6 +297,7 @@ def test_failed_code_check_skips_the_critic():
 
     current = run_review(llm, draft(), [NOT_ELIGIBLE])
 
+    assert current.draft == as_json(draft())
     assert current.critic_issues is None
     assert llm.calls == []
 
@@ -306,7 +316,7 @@ GOOD = draft(message_to_employee="Approved. I cannot confirm a delivery date.")
 
 
 def test_format_review_shows_the_draft_and_the_critic_issues():
-    current = Review(BAD, [], ['"by Friday": No tool result mentions a date.'])
+    current = Review(as_json(BAD), [], ['"by Friday": No tool result mentions a date.'])
 
     assert format_review(1, current) == (
         "Reflection: draft 1\n"
@@ -321,9 +331,9 @@ def test_format_review_shows_the_draft_and_the_critic_issues():
 @pytest.mark.parametrize(
     ("current", "code_line", "critic_line"),
     [
-        (Review(GOOD, [], []), "Code check:  pass", "Critic:      pass"),
-        (Review(GOOD, ["a", "b"]), "Code check:  2 issues", "Critic:      not run"),
-        (Review(GOOD, [], None), "Code check:  pass", "Critic:      no verdict"),
+        (Review(as_json(GOOD), [], []), "Code check:  pass", "Critic:      pass"),
+        (Review(as_json(GOOD), ["a", "b"]), "Code check:  2 issues", "Critic:      not run"),
+        (Review(as_json(GOOD), [], None), "Code check:  pass", "Critic:      no verdict"),
     ],
 )
 def test_format_review_shows_each_check(current, code_line, critic_line):
@@ -333,8 +343,8 @@ def test_format_review_shows_each_check(current, code_line, critic_line):
     assert critic_line in lines
 
 
-FAILED = Review(BAD, [], ["a", "b"])
-PASSED = Review(GOOD, [], [])
+FAILED = Review(as_json(BAD), [], ["a", "b"])
+PASSED = Review(as_json(GOOD), [], [])
 
 
 @pytest.mark.parametrize(
@@ -367,5 +377,5 @@ def test_cli_prints_the_reflected_decision(server_db, monkeypatch, capsys):
     final = output[output.index("Reflection: REVISED") :]
     assert code == 0
     assert "Reflection: draft 1" in output and "Reflection: draft 2" in output
-    assert GOOD["message_to_employee"] in final
-    assert BAD["message_to_employee"] not in final
+    assert GOOD.message_to_employee in final
+    assert BAD.message_to_employee not in final

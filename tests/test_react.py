@@ -12,7 +12,7 @@ from fakes import FakeLLM, call, reply, thought
 from equipment.agent.mcp_client import connect
 from equipment.agent.react import SUBMIT_TOOL, escalate, run_agent
 from equipment.agent.trace import format_decision, format_step
-from equipment.agent.types import Request, Step
+from equipment.agent.types import Draft, Request, Step
 from equipment.domain.models import ReasonCode
 
 DECISION = {
@@ -64,7 +64,7 @@ def test_agent_returns_the_submitted_decision(agent):
 
     result = agent(llm)
 
-    assert (result.stop, result.decision) == ("submitted", DECISION)
+    assert (result.stop, result.decision) == ("submitted", Draft(**DECISION))
     assert [step.action for step in result.steps] == [
         "get_employee_info",
         "check_request_eligibility",
@@ -140,7 +140,8 @@ def test_submit_tool_is_strict_and_lists_every_reason_code():
 
     assert SUBMIT_TOOL["strict"] is True
     assert schema["additionalProperties"] is False
-    assert schema["properties"]["reason_code"]["enum"] == list(ReasonCode)
+    assert schema["required"] == list(Draft.model_fields)
+    assert schema["$defs"]["ReasonCode"]["enum"] == list(ReasonCode)
 
 
 def test_other_employee_id_is_blocked(agent):
@@ -169,12 +170,12 @@ def test_step_limit_escalates(agent, server_db):
 
     assert result.stop == "step_limit"
     assert len(llm.calls) == 3
-    assert (result.decision["decision"], result.decision["reason_code"]) == (
+    assert (result.decision.decision, result.decision.reason_code) == (
         "escalate",
         "AGENT_STEP_LIMIT",
     )
     assert saved_escalations(server_db) == [
-        (result.decision["escalation_id"], "E001", "AGENT_STEP_LIMIT")
+        (result.decision.escalation_id, "E001", "AGENT_STEP_LIMIT")
     ]
 
 
@@ -182,7 +183,7 @@ def test_refusal_escalates(agent, server_db):
     result = agent(FakeLLM(reply(stop="refusal")))
 
     assert result.stop == "refused"
-    assert result.decision["reason_code"] == "AGENT_REFUSED"
+    assert result.decision.reason_code == "AGENT_REFUSED"
     assert saved_escalations(server_db)[0][2] == "AGENT_REFUSED"
 
 
@@ -209,9 +210,9 @@ def test_step_limit_keeps_an_existing_escalation(agent, server_db):
 
     [(saved_id, _, saved_code)] = saved_escalations(server_db)
     assert result.stop == "step_limit"
-    assert result.decision["escalation_id"] == saved_id
-    assert result.decision["reason_code"] == saved_code == "EXCEPTION_REQUEST"
-    assert saved_id in result.decision["message_to_employee"]
+    assert result.decision.escalation_id == saved_id
+    assert result.decision.reason_code == saved_code == "EXCEPTION_REQUEST"
+    assert saved_id in result.decision.message_to_employee
 
 
 def test_second_flag_is_blocked(agent, server_db):
@@ -290,7 +291,7 @@ def test_format_step():
 
 
 def test_format_decision():
-    text = format_decision(DECISION | {"decision": "escalate", "escalation_id": "ESC-1"})
+    text = format_decision(Draft(**DECISION | {"decision": "escalate", "escalation_id": "ESC-1"}))
 
     assert "Decision:    ESCALATE (WITHIN_LIMIT)" in text
     assert "Escalation:  ESC-1" in text
@@ -307,7 +308,7 @@ def test_escalation_survives_a_plain_text_tool_result():
         escalate(TextOnlyMCP(), request, ReasonCode.AGENT_STEP_LIMIT, "no decision", [], print)
     )
 
-    assert (decision["decision"], decision["escalation_id"]) == ("escalate", None)
-    assert decision["reason_code"] == "AGENT_STEP_LIMIT"
-    assert "None" not in decision["message_to_employee"]
-    assert "could not be decided or recorded" in decision["message_to_employee"]
+    assert (decision.decision, decision.escalation_id) == ("escalate", None)
+    assert decision.reason_code == "AGENT_STEP_LIMIT"
+    assert "None" not in decision.message_to_employee
+    assert "could not be decided or recorded" in decision.message_to_employee
