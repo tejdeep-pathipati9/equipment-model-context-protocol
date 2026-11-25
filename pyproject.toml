@@ -32,7 +32,7 @@ testpaths = ["tests"]
 markers = [
     "eval: live-LLM agent evals (agent-eval CI job only)",
 ]
-addopts = "-ra"
+addopts = "-ra -m 'not eval'"  # evals call the live model; run them with -m eval
 
 [tool.ruff]
 line-length = 100
