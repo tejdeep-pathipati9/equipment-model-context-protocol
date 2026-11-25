@@ -4,7 +4,8 @@ import importlib
 
 import pytest
 
-from equipment.agent.cli import build_parser
+from equipment.agent.cli import build_parser, load_scenario
+from equipment.agent.react import Request
 from equipment.data import seed
 
 MODULES = [
@@ -57,3 +58,12 @@ def test_cli_parses_employee_and_text():
 def test_cli_requires_a_source():
     with pytest.raises(SystemExit):
         build_parser().parse_args([])
+
+
+def test_load_scenario():
+    assert load_scenario(3) == Request("E003", "One of my monitors died, can I get a replacement?")
+
+
+def test_load_scenario_out_of_range():
+    with pytest.raises(SystemExit, match="1-4"):
+        load_scenario(9)

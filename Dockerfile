@@ -30,7 +30,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     AS_OF_DATE=2026-12-01
 CMD ["pytest", "-m", "eval"]
 
-# ---- runtime (default target): agent + server in one image (stdio) ----
+# ---- runtime (default target): one image; `server` or the agent (see docker-compose.yml) ----
 FROM base AS runtime
 RUN useradd --create-home --uid 1000 app \
     && mkdir -p /app/data \
@@ -42,5 +42,6 @@ ENV PATH="/app/.venv/bin:$PATH" \
     EQUIP_DB_PATH=/app/data/equipment.db
 USER app
 VOLUME ["/app/data"]
+EXPOSE 8000
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["--help"]

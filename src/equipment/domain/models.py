@@ -81,6 +81,7 @@ class ReasonCode(StrEnum):
     # safe fallbacks
     REFLECTION_FAILED = "REFLECTION_FAILED"
     AGENT_STEP_LIMIT = "AGENT_STEP_LIMIT"
+    AGENT_REFUSED = "AGENT_REFUSED"
 
 
 # The reason codes that may be escalated (the rest are approve/deny outcomes).
@@ -94,6 +95,7 @@ ESCALATION_CODES = frozenset(
         ReasonCode.EXCEPTION_REQUEST,
         ReasonCode.REFLECTION_FAILED,
         ReasonCode.AGENT_STEP_LIMIT,
+        ReasonCode.AGENT_REFUSED,
     }
 )
 

@@ -40,6 +40,12 @@ jobs:
       - name: Image smoke check
         run: docker run --rm equip-agent --help
 
+      - name: Compose smoke check (server + client containers over HTTP)
+        run: |
+          docker compose up -d --wait mcp-server
+          docker compose run --rm --entrypoint python agent -m equipment.agent.mcp_client
+          docker compose down -v
+
   agent-eval:
     name: agent-eval
     needs: test

@@ -304,6 +304,7 @@ def test_flag_strips_whitespace(repo, db_path):
         "EXCEPTION_REQUEST",
         "REFLECTION_FAILED",
         "AGENT_STEP_LIMIT",
+        "AGENT_REFUSED",
     ],
 )
 def test_flag_accepts_escalation_codes(repo, reason_code):

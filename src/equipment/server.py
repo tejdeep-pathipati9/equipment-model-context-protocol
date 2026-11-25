@@ -1,4 +1,4 @@
-"""MCP server (stdio transport) + composition root.
+"""MCP server (Streamable HTTP or stdio) + composition root.
 
 Run with `python -m equipment.server` (or `uv run server`). Wrappers here only pass arguments
 through; business logic lives in `equipment.tools`. This is the only place that reads config
@@ -15,8 +15,10 @@ from datetime import UTC, date, datetime
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 
-from equipment import tools
+from equipment import config, tools
+from equipment.config import Transport
 from equipment.data.seed import db_path
 from equipment.data.sqlite_repo import SqliteRepository
 
@@ -72,7 +74,8 @@ def flag_for_human_review(
 ) -> dict[str, Any]:
     """Escalate a request to a human. Saves a record, so call it at most once per request.
     reason_code: UNKNOWN_EMPLOYEE, VAGUE_REQUEST, ITEM_NOT_IN_CATALOG, RECORDS_INCOMPLETE,
-    CLAIM_CONTRADICTS_RECORDS, EXCEPTION_REQUEST, REFLECTION_FAILED or AGENT_STEP_LIMIT.
+    CLAIM_CONTRADICTS_RECORDS, EXCEPTION_REQUEST, REFLECTION_FAILED, AGENT_STEP_LIMIT or
+    AGENT_REFUSED.
     Returns the escalation_id and status."""
     with repository() as repo:
         return tools.flag_for_human_review(
@@ -80,16 +83,42 @@ def flag_for_human_review(
         )
 
 
+LOCALHOST = ("127.0.0.1", "localhost", "::1")
+
+
+def transport_security() -> TransportSecuritySettings | None:
+    """The SDK protects localhost itself; any other address must list its allowed hosts."""
+    if config.host() in LOCALHOST:
+        return None
+    hosts = config.allowed_hosts()
+    if not hosts:
+        raise SystemExit(f"MCP_HOST={config.host()} needs MCP_ALLOWED_HOSTS, e.g. mcp-server:*")
+    return TransportSecuritySettings(
+        allowed_hosts=hosts, allowed_origins=[f"http://{host}" for host in hosts]
+    )
+
+
 def main() -> None:
-    # stdout carries the MCP protocol, so human-readable status goes to stderr only.
+    # With stdio, stdout carries the MCP protocol, so status goes to stderr only.
+    transport = config.transport()
     registered = asyncio.run(mcp.list_tools())
-    log(f"equipment MCP server ready on stdio, {len(registered)} tool(s):")
+    log(f"equipment MCP server on {transport}, {len(registered)} tool(s):")
     for tool in registered:
         log(f"  - {tool.name}")
     log(f"db={db_path()} as_of={as_of()}")
-    log("waiting for a client (JSON-RPC on stdin); Ctrl+C to stop")
     try:
-        mcp.run()  # stdio
+        if transport is Transport.STDIO:
+            log("waiting for a client (JSON-RPC on stdin); Ctrl+C to stop")
+            mcp.run("stdio")
+        else:
+            security = transport_security()
+            log(f"listening on http://{config.host()}:{config.port()}/mcp; Ctrl+C to stop")
+            mcp.run(
+                "streamable-http",
+                host=config.host(),
+                port=config.port(),
+                transport_security=security,
+            )
     except KeyboardInterrupt:
         log("stopped")
 
