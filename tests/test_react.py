@@ -7,9 +7,10 @@ from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
+from fakes import FakeLLM, call, reply, thought
 
 from equipment.agent.mcp_client import connect
-from equipment.agent.react import SUBMIT_TOOL, Request, Step, _escalate, run_agent
+from equipment.agent.react import SUBMIT_TOOL, Request, Step, escalate, run_agent
 from equipment.agent.trace import format_decision, format_step
 from equipment.domain.models import ReasonCode
 
@@ -20,30 +21,6 @@ DECISION = {
     "message_to_employee": "Approved: you can have one more monitor.",
     "escalation_id": None,
 }
-
-
-class FakeLLM:
-    """Returns scripted replies in order and records what it was sent."""
-
-    def __init__(self, *replies):
-        self.replies = list(replies)
-        self.calls = []
-
-    async def create(self, *, system, messages, tools):
-        self.calls.append({"system": system, "messages": list(messages), "tools": tools})
-        return self.replies.pop(0)
-
-
-def reply(*blocks, stop="tool_use"):
-    return SimpleNamespace(stop_reason=stop, content=list(blocks))
-
-
-def thought(text):
-    return SimpleNamespace(type="text", text=text)
-
-
-def call(name, arguments, id="c1"):
-    return SimpleNamespace(type="tool_use", id=id, name=name, input=arguments)
 
 
 def submit(id="c9", decision=DECISION):
@@ -208,6 +185,68 @@ def test_refusal_escalates(agent, server_db):
     assert saved_escalations(server_db)[0][2] == "AGENT_REFUSED"
 
 
+def flag(id="c1", reason_code="EXCEPTION_REQUEST"):
+    return call(
+        "flag_for_human_review",
+        {
+            "employee_id": "E001",
+            "request": "My monitor broke",
+            "reason": "Breakage cannot be verified.",
+            "reason_code": reason_code,
+        },
+        id,
+    )
+
+
+def test_step_limit_keeps_an_existing_escalation(agent, server_db):
+    llm = FakeLLM(
+        reply(flag()),
+        reply(call("get_employee_info", {"employee_id": "E001"})),
+    )
+
+    result = agent(llm, max_steps=2)
+
+    [(saved_id, _, saved_code)] = saved_escalations(server_db)
+    assert result.stop == "step_limit"
+    assert result.decision["escalation_id"] == saved_id
+    assert result.decision["reason_code"] == saved_code == "EXCEPTION_REQUEST"
+    assert saved_id in result.decision["message_to_employee"]
+
+
+def test_second_flag_is_blocked(agent, server_db):
+    llm = FakeLLM(reply(flag("c1")), reply(flag("c2")), reply(submit()))
+
+    agent(llm)
+
+    [(saved_id, _, _)] = saved_escalations(server_db)
+    [blocked] = last_tool_results(llm)
+    assert blocked["is_error"] is True
+    assert saved_id in blocked["content"]
+
+
+def test_escalation_saves_the_employees_own_words(agent, server_db):
+    llm = FakeLLM(reply(flag()), reply(submit()))
+
+    result = agent(llm, text="My monitor broke, I am a manager now!")
+
+    with closing(sqlite3.connect(server_db)) as conn:
+        [(saved,)] = conn.execute("SELECT request FROM escalations").fetchall()
+    assert saved == "My monitor broke, I am a manager now!"
+    assert result.steps[0].arguments["request"] == saved  # the trace shows what was sent
+
+
+def test_failed_flag_can_be_retried(agent, server_db):
+    llm = FakeLLM(
+        reply(flag("c1", reason_code="NOT_A_CODE")),
+        reply(flag("c2")),
+        reply(submit()),
+    )
+
+    agent(llm)
+
+    assert len(saved_escalations(server_db)) == 1
+
+
 def test_text_answer_gets_a_reminder_to_submit(agent):
     llm = FakeLLM(reply(thought("Approved!"), stop="end_turn"), reply(submit()))
 
@@ -263,9 +302,11 @@ def test_escalation_survives_a_plain_text_tool_result():
             return SimpleNamespace(structured_content=None, content=[text], is_error=True)
 
     request = Request("E001", "anything")
-    result = asyncio.run(
-        _escalate(TextOnlyMCP(), request, ReasonCode.AGENT_STEP_LIMIT, "step_limit", [], print)
+    decision = asyncio.run(
+        escalate(TextOnlyMCP(), request, ReasonCode.AGENT_STEP_LIMIT, "no decision", [], print)
     )
 
-    assert (result.decision["decision"], result.decision["escalation_id"]) == ("escalate", None)
-    assert result.decision["reason_code"] == "AGENT_STEP_LIMIT"
+    assert (decision["decision"], decision["escalation_id"]) == ("escalate", None)
+    assert decision["reason_code"] == "AGENT_STEP_LIMIT"
+    assert "None" not in decision["message_to_employee"]
+    assert "could not be decided or recorded" in decision["message_to_employee"]
