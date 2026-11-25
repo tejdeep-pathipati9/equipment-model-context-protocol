@@ -4,14 +4,16 @@ import argparse
 import asyncio
 import json
 import sys
+from itertools import count
 from pathlib import Path
 
 import anthropic
 
 from equipment.agent.llm import FoundryClient
 from equipment.agent.mcp_client import ServerUnavailable, connect
-from equipment.agent.react import Request, run_agent
-from equipment.agent.trace import format_decision, format_step
+from equipment.agent.react import Request, Step, run_agent
+from equipment.agent.reflection import Round, reflect
+from equipment.agent.trace import format_decision, format_outcome, format_round, format_step
 
 SCENARIOS = Path("scenarios/demo.json")
 
@@ -41,23 +43,26 @@ def load_scenario(number: int) -> Request:
 async def run(request: Request) -> int:
     llm = FoundryClient.from_env()
     print(f"Request:     {request.employee_id}: {request.text}\n")
-    steps = 0
+    step_numbers, draft_numbers = count(1), count(1)
 
-    def show(step):
-        nonlocal steps
-        steps += 1
-        print(format_step(steps, step), end="\n\n", flush=True)
+    def show_step(step: Step) -> None:
+        print(format_step(next(step_numbers), step), end="\n\n", flush=True)
+
+    def show_round(current: Round) -> None:
+        print(format_round(next(draft_numbers), current), end="\n\n", flush=True)
 
     async with connect() as mcp:
         try:
-            result = await run_agent(llm, mcp, request, on_step=show)
+            result = await run_agent(llm, mcp, request, on_step=show_step)
+            reflection = await reflect(llm, mcp, request, result, on_round=show_round)
         except anthropic.APIStatusError as error:
             print(f"Foundry error {error.status_code}: {error.message}", file=sys.stderr)
             return 1
         except anthropic.APIConnectionError:
             print("cannot reach Foundry: check the endpoint setting in .env", file=sys.stderr)
             return 1
-    print(format_decision(result.decision))
+    print(format_outcome(reflection))
+    print(format_decision(reflection.decision))
     return 0
 
 

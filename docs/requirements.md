@@ -184,6 +184,7 @@ Before a response is final, the agent **reflects** on its draft:
 - a separate LLM critic checks every claim in the draft against the tool observations.
 
 A draft that still fails after 2 revisions is escalated instead (`REFLECTION_FAILED`). If the
+request was already escalated, its saved escalation ID and reason code are kept. If the
 agent exceeds 8 reasoning steps, the request is escalated (`AGENT_STEP_LIMIT`). If the model declines to answer, it is escalated (`AGENT_REFUSED`).
 
 ---
