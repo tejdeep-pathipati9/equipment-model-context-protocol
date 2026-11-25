@@ -10,8 +10,9 @@ import pytest
 from fakes import FakeLLM, call, reply, thought
 
 from equipment.agent.mcp_client import connect
-from equipment.agent.react import SUBMIT_TOOL, Request, Step, escalate, run_agent
+from equipment.agent.react import SUBMIT_TOOL, escalate, run_agent
 from equipment.agent.trace import format_decision, format_step
+from equipment.agent.types import Request, Step
 from equipment.domain.models import ReasonCode
 
 DECISION = {

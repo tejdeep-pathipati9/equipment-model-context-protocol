@@ -1,21 +1,26 @@
-"""Live critic against planted drafts (hand-written, right or wrong). Needs Foundry settings.
+"""Live reflection against planted drafts (hand-written, right or wrong). Needs Foundry settings.
 
-uv run --env-file .env pytest -m eval -s tests/evals/test_critic.py
+uv run --env-file .env pytest -m eval -s tests/evals/test_reflection_live.py
 """
 
 import asyncio
 import sqlite3
 from datetime import date
+from functools import partial
 from itertools import count
+from types import SimpleNamespace
 
 import pytest
+from anthropic.types import ToolUseBlock
 
 from equipment import tools
 from equipment.agent.llm import FoundryClient
 from equipment.agent.mcp_client import connect
-from equipment.agent.react import AgentResult, Request, Step
-from equipment.agent.reflection import Outcome, check_draft, critique, reflect
-from equipment.agent.trace import format_outcome, format_round
+from equipment.agent.prompts import SYSTEM
+from equipment.agent.react import run_agent
+from equipment.agent.reflection import check_draft, critique, review_draft
+from equipment.agent.trace import format_outcome, format_review, format_step
+from equipment.agent.types import Outcome, Request, Step
 from equipment.data.sqlite_repo import SqliteRepository
 
 pytestmark = pytest.mark.eval
@@ -106,6 +111,16 @@ BAD = [
         OLD_LAPTOP,
         approve("laptop", "Approved: you get an additional laptop.", "REFRESH_DUE"),
         id="additional, but basis is refresh",
+    ),
+    pytest.param(
+        OLD_LAPTOP,
+        approve(
+            "laptop",
+            "Approved: your laptop is 43 months old and the refresh interval is 36 months. The new "
+            "laptop replaces your oldest one. IT will collect the old one at the handover.",
+            "REFRESH_DUE",
+        ),
+        id="invented return process",
     ),
     pytest.param(
         SLOW_LAPTOP,
@@ -222,6 +237,16 @@ GOOD = [
         id="limits are per role",
     ),
     pytest.param(
+        OLD_LAPTOP,
+        approve(
+            "laptop",
+            "Approved: your laptop is 43 months old and the refresh interval is 36 months. The new "
+            "laptop replaces your oldest one, which must be returned.",
+            "REFRESH_DUE",
+        ),
+        id="refresh means a return",
+    ),
+    pytest.param(
         MANY_ITEMS,
         escalate(
             "monitor",
@@ -257,38 +282,102 @@ def test_critic_passes_a_good_draft(request_, draft, steps_for):
     assert issues == []
 
 
-@pytest.mark.parametrize(
-    ("request_", "draft"),
-    [
-        pytest.param(
-            SECOND_MONITOR,
-            approve("monitor", "Approved: one more monitor. You will have it by Friday."),
-            id="critic catches a promise",
-        ),
-        pytest.param(
-            CONTRACTOR_LAPTOP,
-            approve("laptop", "Approved: you can have a laptop."),
-            id="code check catches a wrong decision",
-        ),
-    ],
-)
-def test_reflection_corrects_a_planted_draft(request_, draft, steps_for, monkeypatch):
+class PlantedLLM:
+    """Plays scripted drafter turns first, then the real model; the critic is always real."""
+
+    def __init__(self, llm, *turns):
+        self.llm = llm
+        self.turns = list(turns)
+
+    async def create(self, *, system, messages, tools):
+        if system == SYSTEM and self.turns:
+            return self.turns.pop(0)
+        return await self.llm.create(system=system, messages=messages, tools=tools)
+
+
+def planted_turn(id, name, arguments):
+    block = ToolUseBlock(type="tool_use", id=id, name=name, input=arguments)
+    return SimpleNamespace(stop_reason="tool_use", content=[block])
+
+
+def look_up(request, item):
+    arguments = {"employee_id": request.employee_id, "item": item}
+    return planted_turn("toolu_planted1", "check_request_eligibility", arguments)
+
+
+def submit(draft):
+    return planted_turn("toolu_planted2", "submit_decision", draft)
+
+
+@pytest.fixture
+def run_planted(server_db, monkeypatch):
+    """The real agent, starting from planted drafter turns; prints the whole trace."""
     monkeypatch.setenv("MCP_TRANSPORT", "stdio")
-    numbers = count(1)
-    print("\nPLANTED DRAFT (hand-written, not produced by the agent)\n")
+    step_numbers, draft_numbers = count(1), count(1)
 
-    async def go():
-        async with connect() as mcp:
-            return await reflect(
-                FoundryClient.from_env(),
-                mcp,
-                request_,
-                AgentResult(draft, "submitted", steps_for(request_, draft)),
-                on_round=lambda r: print(format_round(next(numbers), r), end="\n\n"),
-            )
+    def run(request, *turns):
+        llm = PlantedLLM(FoundryClient.from_env(), *turns)
+        print("\nPLANTED FIRST DRAFT (hand-written, not produced by the agent)\n")
 
-    reflection = asyncio.run(go())
+        async def go():
+            async with connect() as mcp:
+                return await run_agent(
+                    llm,
+                    mcp,
+                    request,
+                    reviewer=partial(review_draft, llm),
+                    on_step=lambda s: print(format_step(next(step_numbers), s), end="\n\n"),
+                    on_review=lambda r: print(format_review(next(draft_numbers), r), end="\n\n"),
+                )
 
-    print(format_outcome(reflection))
-    assert reflection.outcome == Outcome.REVISED
-    assert reflection.decision["message_to_employee"] != draft["message_to_employee"]
+        result = asyncio.run(go())
+        print(format_outcome(result))
+        return result
+
+    return run
+
+
+def actions_after_rejection(result):
+    rejected = next(i for i, step in enumerate(result.steps) if step.is_error)
+    return [step.action for step in result.steps[rejected + 1 :]]
+
+
+def test_wording_is_fixed_without_another_lookup(run_planted):
+    bad = approve("monitor", "Approved: one more monitor. You will have it by Friday.")
+
+    result = run_planted(SECOND_MONITOR, look_up(SECOND_MONITOR, "monitor"), submit(bad))
+
+    assert (result.outcome, result.decision["decision"]) == (Outcome.REVISED, "approve")
+    assert set(actions_after_rejection(result)) == {"submit_decision"}
+
+
+def test_missing_fact_is_looked_up(run_planted):
+    guess = approve("monitor", "Approved: one more monitor.")
+
+    result = run_planted(SECOND_MONITOR, submit(guess))
+
+    assert (result.outcome, result.decision["decision"]) == (Outcome.REVISED, "approve")
+    assert "check_request_eligibility" in actions_after_rejection(result)
+
+
+def test_wrong_decision_is_corrected(run_planted):
+    wrong = approve("laptop", "Approved: you can have a laptop.")
+
+    result = run_planted(CONTRACTOR_LAPTOP, look_up(CONTRACTOR_LAPTOP, "laptop"), submit(wrong))
+
+    assert (result.decision["decision"], result.decision["reason_code"]) == (
+        "deny",
+        "ROLE_NOT_ELIGIBLE",
+    )
+
+
+def test_wrong_denial_becomes_an_escalation(run_planted):
+    wrong = deny("monitor", "REFRESH_NOT_DUE", "Denied: your monitors are not due for a refresh.")
+
+    result = run_planted(DEAD_MONITOR, look_up(DEAD_MONITOR, "monitor"), submit(wrong))
+
+    assert (result.outcome, result.decision["reason_code"]) == (
+        Outcome.REVISED,
+        "EXCEPTION_REQUEST",
+    )
+    assert actions_after_rejection(result).count("flag_for_human_review") == 1

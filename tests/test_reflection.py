@@ -1,28 +1,24 @@
-"""Reflection: code check, critic and revisions. Scripted fake LLM, no Azure."""
+"""Reflection: code check, critic and trace. Scripted fake LLM, no Azure."""
 
 import asyncio
 import json
-import sqlite3
-from contextlib import closing
-from types import SimpleNamespace
 
 import pytest
 from fakes import FakeLLM, call, reply, thought
 
 from equipment.agent.cli import run
-from equipment.agent.mcp_client import connect
-from equipment.agent.prompts import CATALOG, CRITIC, DECISION_RULES, REVISE, SYSTEM, SYSTEM_FACTS
-from equipment.agent.react import SUBMIT_TOOL, AgentResult, Request, Step
-from equipment.agent.reflection import (
-    REVIEW_TOOL,
-    Outcome,
-    Reflection,
-    Round,
-    check_draft,
-    critique,
-    reflect,
+from equipment.agent.prompts import (
+    CATALOG,
+    CRITIC,
+    DECISION_RULES,
+    MESSAGE_RULES,
+    REJECTED,
+    SYSTEM,
+    SYSTEM_FACTS,
 )
-from equipment.agent.trace import format_outcome, format_round
+from equipment.agent.reflection import REVIEW_TOOL, check_draft, critique, review_draft
+from equipment.agent.trace import format_outcome, format_review
+from equipment.agent.types import AgentResult, Request, Review, Step, Stop
 from equipment.domain.models import Item
 
 
@@ -174,6 +170,12 @@ def test_failed_tool_results_do_not_count():
     assert "no eligibility" in check_draft(draft(), [unknown, text, blocked])[0]
 
 
+def test_cut_off_draft_is_a_problem_not_a_crash():
+    [issue] = check_draft({"decision": "approve"}, [eligibility()])
+
+    assert "reason_code" in issue and "message_to_employee" in issue
+
+
 def test_check_reports_every_problem():
     proposed = draft(reason_code="REFRESH_DUE", item="laptop")
 
@@ -190,7 +192,7 @@ def review(*issues):
     return reply(call("submit_review", {"issues": list(issues)}))
 
 
-def revise(proposed):
+def submit(proposed):
     return reply(call("submit_decision", proposed))
 
 
@@ -249,12 +251,13 @@ def test_review_tool_is_strict():
     assert schema["required"] == ["issues"]
 
 
-def test_drafter_critic_and_reviser_share_the_decision_rules():
-    assert all(DECISION_RULES in prompt for prompt in (SYSTEM, CRITIC, REVISE))
+def test_drafter_and_critic_share_the_decision_rules():
+    assert all(DECISION_RULES in prompt for prompt in (SYSTEM, CRITIC))
 
 
-def test_critic_and_reviser_know_the_system_facts():
-    assert all(SYSTEM_FACTS in prompt for prompt in (CRITIC, REVISE))
+def test_critic_and_rejection_know_the_system_facts():
+    assert all(SYSTEM_FACTS in prompt for prompt in (CRITIC, REJECTED))
+    assert all(MESSAGE_RULES in prompt for prompt in (CRITIC, REJECTED))
     assert all(CATALOG in prompt for prompt in (SYSTEM, SYSTEM_FACTS))
 
 
@@ -262,200 +265,50 @@ def test_catalog_matches_the_domain():
     assert CATALOG.split(", ") == list(Item)
 
 
-# ---------------------------------------------------------------- the reflection loop
+# ---------------------------------------------------------------- the review
 
 
-class FakeMCP:
-    """Saves every escalation as ESC-NEW."""
-
-    def __init__(self):
-        self.calls = []
-
-    async def call_tool(self, name, arguments):
-        self.calls.append((name, arguments))
-        saved = {"escalation_id": "ESC-NEW", "status": "open"}
-        return SimpleNamespace(structured_content=saved, content=[], is_error=False)
+def run_review(llm, proposed, steps):
+    return asyncio.run(review_draft(llm, REQUEST, proposed, steps))
 
 
-def run_reflect(llm, proposed=None, steps=None, stop="submitted", mcp=None, **options):
-    result = AgentResult(proposed or draft(), stop, steps or [eligibility()])
-    return asyncio.run(reflect(llm, mcp or FakeMCP(), REQUEST, result, **options))
+def test_review_runs_both_checks():
+    current = run_review(FakeLLM(review(BY_FRIDAY)), draft(), [eligibility()])
 
+    assert (current.code_issues, len(current.critic_issues)) == ([], 1)
+    assert current.passed is False
+
+
+def test_review_passes_a_clean_draft():
+    assert run_review(FakeLLM(review()), draft(), [eligibility()]).passed is True
+
+
+def test_failed_code_check_skips_the_critic():
+    llm = FakeLLM()
+
+    current = run_review(llm, draft(), [NOT_ELIGIBLE])
+
+    assert current.critic_issues is None
+    assert llm.calls == []
+
+
+def test_no_verdict_is_an_issue():
+    current = run_review(FakeLLM(reply(stop="refusal")), draft(), [eligibility()])
+
+    assert (current.passed, current.no_verdict) == (False, True)
+    assert "no verdict" in current.issues[0]
+
+
+# ---------------------------------------------------------------- trace
 
 BAD = draft(message_to_employee="Approved. You will have it by Friday.")
 GOOD = draft(message_to_employee="Approved. I cannot confirm a delivery date.")
 
 
-def test_clean_draft_is_confirmed():
-    llm = FakeLLM(review())
+def test_format_review_shows_the_draft_and_the_critic_issues():
+    current = Review(BAD, [], ['"by Friday": No tool result mentions a date.'])
 
-    reflection = run_reflect(llm, GOOD)
-
-    assert (reflection.outcome, reflection.decision) == (Outcome.CONFIRMED, GOOD)
-    assert len(llm.calls) == 1
-
-
-def test_critic_issue_is_revised_and_checked_again():
-    llm = FakeLLM(review(BY_FRIDAY), revise(GOOD), review())
-
-    reflection = run_reflect(llm, BAD)
-
-    assert (reflection.outcome, reflection.decision) == (Outcome.REVISED, GOOD)
-    first, second = reflection.rounds
-    assert (first.draft, len(first.critic_issues)) == (BAD, 1)
-    assert (second.draft, second.critic_issues) == (GOOD, [])
-
-
-def test_failed_code_check_skips_the_critic():
-    denied = draft(decision="deny", reason_code="ROLE_NOT_ELIGIBLE", item="laptop")
-    not_eligible = eligibility("not_eligible", "ROLE_NOT_ELIGIBLE", None, item="laptop")
-    llm = FakeLLM(revise(denied), review())
-
-    reflection = run_reflect(llm, draft(item="laptop"), [not_eligible])
-
-    assert (reflection.outcome, reflection.decision) == (Outcome.REVISED, denied)
-    assert llm.calls[0]["system"] == REVISE
-    assert reflection.rounds[0].critic_issues is None
-
-
-def test_reviser_gets_the_issues_and_only_the_submit_tool():
-    llm = FakeLLM(review(BY_FRIDAY), revise(GOOD), review())
-
-    run_reflect(llm, BAD)
-
-    sent = llm.calls[1]
-    content = json.loads(sent["messages"][0]["content"])
-    assert content["issues"] == ['"by Friday": No tool result mentions a date.']
-    assert content["draft"] == BAD
-    assert sent["tools"] == [SUBMIT_TOOL]
-
-
-def test_second_revision_starts_from_the_first():
-    better = draft(message_to_employee="Approved. It should arrive by Friday.")
-    llm = FakeLLM(review(BY_FRIDAY), revise(better), review(BY_FRIDAY), revise(GOOD), review())
-
-    reflection = run_reflect(llm, BAD)
-
-    assert json.loads(llm.calls[3]["messages"][0]["content"])["draft"] == better
-    assert (reflection.outcome, reflection.decision) == (Outcome.REVISED, GOOD)
-
-
-def test_still_failing_after_two_revisions_escalates():
-    mcp = FakeMCP()
-    llm = FakeLLM(review(BY_FRIDAY), revise(BAD), review(BY_FRIDAY), revise(BAD), review(BY_FRIDAY))
-
-    reflection = run_reflect(llm, BAD, mcp=mcp)
-
-    assert reflection.outcome == Outcome.ESCALATED
-    assert len(reflection.rounds) == 3
-    assert llm.replies == []
-    assert (reflection.decision["decision"], reflection.decision["reason_code"]) == (
-        "escalate",
-        "REFLECTION_FAILED",
-    )
-    [(name, arguments)] = mcp.calls
-    assert name == "flag_for_human_review"
-    assert "by Friday" in arguments["reason"]
-
-
-def test_max_revisions_can_be_changed():
-    reflection = run_reflect(FakeLLM(review(BY_FRIDAY)), BAD, max_revisions=0)
-
-    assert reflection.outcome == Outcome.ESCALATED
-
-
-def test_failing_draft_that_was_escalated_keeps_its_record():
-    mcp = FakeMCP()
-    bad = escalation(message_to_employee="ESC-1: you will surely get it.")
-    llm = FakeLLM(review(BY_FRIDAY))
-
-    reflection = run_reflect(llm, bad, [flagged()], mcp=mcp, max_revisions=0)
-
-    assert mcp.calls == []
-    assert reflection.decision["escalation_id"] == "ESC-1"
-    assert reflection.decision["reason_code"] == "EXCEPTION_REQUEST"
-    assert "surely" not in reflection.decision["message_to_employee"]
-
-
-@pytest.mark.parametrize(
-    ("before", "after", "steps"),
-    [
-        pytest.param(BAD, escalation(escalation_id=None), [eligibility()], id="to escalate"),
-        pytest.param(escalation(), draft(), [eligibility()], id="from escalate"),
-    ],
-)
-def test_revision_cannot_switch_to_or_from_escalate(before, after, steps):
-    llm = FakeLLM(*([review(BY_FRIDAY)] if before is BAD else []), revise(after))
-
-    reflection = run_reflect(llm, before, steps)
-
-    assert reflection.outcome == Outcome.ESCALATED
-    assert reflection.decision["reason_code"] == "REFLECTION_FAILED"
-    assert llm.replies == []
-
-
-def test_revision_may_switch_between_approve_and_deny():
-    approved = draft(reason_code="WITHIN_LIMIT")
-    llm = FakeLLM(revise(approved), review())
-
-    reflection = run_reflect(llm, draft(decision="deny", reason_code="REFRESH_NOT_DUE"))
-
-    assert (reflection.outcome, reflection.decision) == (Outcome.REVISED, approved)
-
-
-def test_critic_without_a_verdict_escalates():
-    reflection = run_reflect(FakeLLM(reply(stop="refusal")))
-
-    assert reflection.outcome == Outcome.ESCALATED
-
-
-def test_reviser_without_a_draft_escalates():
-    llm = FakeLLM(review(BY_FRIDAY), reply(thought("Sorry"), stop="end_turn"))
-
-    assert run_reflect(llm, BAD).outcome == Outcome.ESCALATED
-
-
-def test_decision_made_by_code_is_not_reviewed():
-    llm = FakeLLM()
-    made_by_code = escalation(reason_code="AGENT_STEP_LIMIT")
-
-    reflection = run_reflect(llm, made_by_code, stop="step_limit")
-
-    assert (reflection.outcome, reflection.decision) == (Outcome.SKIPPED, made_by_code)
-    assert llm.calls == []
-
-
-def test_every_round_is_reported_as_it_happens():
-    seen = []
-    llm = FakeLLM(review(BY_FRIDAY), revise(GOOD), review())
-
-    reflection = run_reflect(llm, BAD, on_round=seen.append)
-
-    assert seen == reflection.rounds
-
-
-def test_fallback_escalation_is_saved_by_the_real_server(server_db, monkeypatch):
-    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
-
-    async def go():
-        async with connect() as mcp:
-            result = AgentResult(BAD, "submitted", [eligibility()])
-            return await reflect(FakeLLM(review(BY_FRIDAY)), mcp, REQUEST, result, max_revisions=0)
-
-    reflection = asyncio.run(go())
-
-    with closing(sqlite3.connect(server_db)) as conn:
-        rows = conn.execute("SELECT id, employee_id, reason_code FROM escalations").fetchall()
-    assert rows == [(reflection.decision["escalation_id"], "E001", "REFLECTION_FAILED")]
-
-
-# ---------------------------------------------------------------- trace
-
-
-def test_format_round_shows_the_draft_and_the_critic_issues():
-    current = Round(BAD, [], ['"by Friday": No tool result mentions a date.'])
-
-    assert format_round(1, current) == (
+    assert format_review(1, current) == (
         "Reflection: draft 1\n"
         "  Decision:    APPROVE (WITHIN_LIMIT)\n"
         "  Message:     Approved. You will have it by Friday.\n"
@@ -468,37 +321,44 @@ def test_format_round_shows_the_draft_and_the_critic_issues():
 @pytest.mark.parametrize(
     ("current", "code_line", "critic_line"),
     [
-        (Round(GOOD, [], []), "Code check:  pass", "Critic:      pass"),
-        (Round(GOOD, ["a", "b"]), "Code check:  2 issues", "Critic:      not run"),
-        (Round(GOOD, [], None), "Code check:  pass", "Critic:      no verdict"),
+        (Review(GOOD, [], []), "Code check:  pass", "Critic:      pass"),
+        (Review(GOOD, ["a", "b"]), "Code check:  2 issues", "Critic:      not run"),
+        (Review(GOOD, [], None), "Code check:  pass", "Critic:      no verdict"),
     ],
 )
-def test_format_round_shows_each_check(current, code_line, critic_line):
-    lines = [line.strip() for line in format_round(1, current).splitlines()]
+def test_format_review_shows_each_check(current, code_line, critic_line):
+    lines = [line.strip() for line in format_review(1, current).splitlines()]
 
     assert code_line in lines
     assert critic_line in lines
 
 
+FAILED = Review(BAD, [], ["a", "b"])
+PASSED = Review(GOOD, [], [])
+
+
 @pytest.mark.parametrize(
-    ("outcome", "rounds", "reason", "expected"),
+    ("stop", "reviews", "expected"),
     [
-        (Outcome.CONFIRMED, 1, None, "Reflection: CONFIRMED (0 revisions)"),
-        (Outcome.REVISED, 2, None, "Reflection: REVISED (1 revision)"),
-        (Outcome.ESCALATED, 3, "Why.", "Reflection: ESCALATED (2 revisions): Why."),
-        (Outcome.SKIPPED, 0, None, "Reflection: SKIPPED (decision made by code)"),
+        (Stop.SUBMITTED, [PASSED], "Reflection: CONFIRMED (0 revisions)"),
+        (Stop.SUBMITTED, [FAILED, PASSED], "Reflection: REVISED (1 revision)"),
+        (Stop.REFLECTION_FAILED, [FAILED] * 3, "Reflection: ESCALATED (2 revisions): a; b"),
+        (Stop.STEP_LIMIT, [FAILED], "Reflection: ESCALATED (0 revisions): a; b"),
+        (Stop.REFUSED, [], "Reflection: SKIPPED (no draft was reviewed)"),
     ],
 )
-def test_format_outcome(outcome, rounds, reason, expected):
-    reflection = Reflection(GOOD, outcome, [Round(GOOD, [])] * rounds, reason)
+def test_format_outcome(stop, reviews, expected):
+    assert format_outcome(AgentResult(GOOD, stop, [], reviews)) == expected
 
-    assert format_outcome(reflection) == expected
+
+def test_review_of_an_incomplete_draft_can_be_printed():
+    assert "Message:     -" in format_review(1, Review({"decision": "approve"}, ["missing: item"]))
 
 
 def test_cli_prints_the_reflected_decision(server_db, monkeypatch, capsys):
     monkeypatch.setenv("MCP_TRANSPORT", "stdio")
     eligible = call("check_request_eligibility", {"employee_id": "E001", "item": "monitor"})
-    llm = FakeLLM(reply(eligible), revise(BAD), review(BY_FRIDAY), revise(GOOD), review())
+    llm = FakeLLM(reply(eligible), submit(BAD), review(BY_FRIDAY), submit(GOOD), review())
     monkeypatch.setattr("equipment.agent.cli.FoundryClient.from_env", lambda: llm)
 
     code = asyncio.run(run(REQUEST))

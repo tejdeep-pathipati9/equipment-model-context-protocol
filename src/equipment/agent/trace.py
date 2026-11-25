@@ -3,8 +3,7 @@
 import json
 from typing import Any
 
-from equipment.agent.react import Step
-from equipment.agent.reflection import Outcome, Reflection, Round
+from equipment.agent.types import AgentResult, Outcome, Review, Step
 
 
 def format_step(number: int, step: Step) -> str:
@@ -19,33 +18,35 @@ def format_step(number: int, step: Step) -> str:
     )
 
 
-def format_round(number: int, current: Round) -> str:
+def format_review(number: int, review: Review) -> str:
     """One draft and its checks; printing every draft shows what each revision changed."""
-    draft = current.draft
-    if current.code_issues:
+    draft = review.draft
+    if review.code_issues:
         critic = "not run"
-    elif current.no_verdict:
+    elif review.no_verdict:
         critic = "no verdict"
     else:
-        critic = _result(current.issues)
+        critic = _result(review.issues)
     lines = [
         f"Reflection: draft {number}",
-        f"  Decision:    {str(draft['decision']).upper()} ({draft['reason_code']})",
-        f"  Message:     {draft['message_to_employee']}",
-        f"  Code check:  {_result(current.code_issues)}",
+        f"  Decision:    {str(draft.get('decision', '-')).upper()} ({draft.get('reason_code')})",
+        f"  Message:     {draft.get('message_to_employee', '-')}",
+        f"  Code check:  {_result(review.code_issues)}",
         f"  Critic:      {critic}",
-        *(f"    - {issue}" for issue in current.issues),
+        *(f"    - {issue}" for issue in review.issues),
     ]
     return "\n".join(lines)
 
 
-def format_outcome(reflection: Reflection) -> str:
+def format_outcome(result: AgentResult) -> str:
     """e.g. Reflection: REVISED (1 revision)"""
-    line = f"Reflection: {reflection.outcome.upper()}"
-    if reflection.outcome == Outcome.SKIPPED:
-        return f"{line} (decision made by code)"
-    line += f" ({_count(len(reflection.rounds) - 1, 'revision')})"
-    return f"{line}: {reflection.reason}" if reflection.reason else line
+    line = f"Reflection: {result.outcome.upper()}"
+    if result.outcome == Outcome.SKIPPED:
+        return f"{line} (no draft was reviewed)"
+    line += f" ({_count(len(result.reviews) - 1, 'revision')})"
+    if result.outcome == Outcome.ESCALATED:
+        line += f": {'; '.join(result.reviews[-1].issues)}"
+    return line
 
 
 def _result(issues: list[str]) -> str:

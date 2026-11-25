@@ -1,19 +1,21 @@
 """The ReAct loop: the model thinks, calls MCP tools, reads the results, and submits a decision.
 
-Safe fallbacks (step limit, refusal) are escalated by code, never left to the model.
+A reviewer may reject a submitted draft; the issues go back to the model as an observation, so it
+can reword the draft or look up what is missing. Safe fallbacks (step limit, refusal, no draft
+passing review) are escalated by code, never left to the model.
 """
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass, field
 from typing import Any
 
-from anthropic.types import MessageParam, ToolParam
+from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
 from mcp import Client
 
 from equipment.agent.llm import LLMClient
 from equipment.agent.mcp_client import anthropic_tools, result_payload
-from equipment.agent.prompts import SYSTEM
+from equipment.agent.prompts import REJECTED, SYSTEM
+from equipment.agent.types import AgentResult, Request, Review, Reviewer, Step, Stop
 from equipment.domain.models import Decision, ReasonCode
 
 SUBMIT = "submit_decision"
@@ -38,41 +40,30 @@ FLAG = "flag_for_human_review"
 REMINDER = f"Call {SUBMIT} with your final decision."
 
 
-@dataclass(frozen=True)
-class Request:
-    employee_id: str  # from metadata, never from the text
-    text: str
-
-
-@dataclass(frozen=True)
-class Step:
-    thought: str
-    action: str
-    arguments: dict[str, Any]
-    observation: Any
-    is_error: bool
-
-
-@dataclass
-class AgentResult:
-    decision: dict[str, Any]
-    stop: str  # "submitted", "step_limit" or "refused"
-    steps: list[Step] = field(default_factory=list)
-
-
 async def run_agent(
     llm: LLMClient,
     mcp: Client,
     request: Request,
+    reviewer: Reviewer | None = None,
     max_steps: int = 8,
+    max_revisions: int = 2,
     on_step: Callable[[Step], None] = lambda step: None,
+    on_review: Callable[[Review], None] = lambda review: None,
 ) -> AgentResult:
-    """One model turn per step; e.g. E001 "second monitor?" -> approve, WITHIN_LIMIT."""
+    """One model turn per step; e.g. E001 "second monitor?" -> approve, WITHIN_LIMIT.
+
+    Without a reviewer the first draft is final.
+    """
     steps: list[Step] = []
+    reviews: list[Review] = []
 
     def record(step: Step) -> None:
         steps.append(step)
         on_step(step)
+
+    async def give_up(stop: Stop, reason_code: ReasonCode, reason: str) -> AgentResult:
+        decision = await escalate(mcp, request, reason_code, reason, steps, record)
+        return AgentResult(decision, stop, steps, reviews)
 
     tools = [*anthropic_tools((await mcp.list_tools()).tools), SUBMIT_TOOL]
     messages: list[MessageParam] = [
@@ -82,9 +73,9 @@ async def run_agent(
     for _ in range(max_steps):
         reply = await llm.create(system=SYSTEM, messages=messages, tools=tools)
         if reply.stop_reason == "refusal":
-            reason = "The model declined to handle this request."
-            decision = await escalate(mcp, request, ReasonCode.AGENT_REFUSED, reason, steps, record)
-            return AgentResult(decision, "refused", steps)
+            return await give_up(
+                Stop.REFUSED, ReasonCode.AGENT_REFUSED, "The model declined to handle this request."
+            )
 
         messages.append({"role": "assistant", "content": reply.content})
         calls = _calls_with_thoughts(reply.content)
@@ -92,13 +83,32 @@ async def run_agent(
             messages.append({"role": "user", "content": REMINDER})
             continue
 
-        results, first_step = [], len(steps) + 1
+        if len(calls) == 1 and calls[0][1].name == SUBMIT:
+            [(thought, call)] = calls
+            draft = dict(call.input)
+            review = await reviewer(request, draft, steps) if reviewer else None
+            issues = review.issues if review else []
+            outcome = {"accepted": False, "issues": issues} if issues else {"accepted": True}
+            record(Step(thought, SUBMIT, draft, outcome, bool(issues)))
+            if review:
+                reviews.append(review)
+                on_review(review)
+            if not issues:
+                return AgentResult(draft, Stop.SUBMITTED, steps, reviews)
+            if reviews[-1].no_verdict or len(reviews) > max_revisions:
+                return await give_up(
+                    Stop.REFLECTION_FAILED,
+                    ReasonCode.REFLECTION_FAILED,
+                    f"The draft did not pass review: {'; '.join(issues)}",
+                )
+            messages.append({"role": "user", "content": [_rejected(call.id, outcome)]})
+            continue
+
+        results: list[ToolResultBlockParam] = []
+        first_step = len(steps) + 1
         for index, (thought, call) in enumerate(calls):
             if index and not thought:
                 thought = f"(same turn as step {first_step})"
-            if call.name == SUBMIT and len(calls) == 1:
-                record(Step(thought, SUBMIT, dict(call.input), {"accepted": True}, False))
-                return AgentResult(dict(call.input), "submitted", steps)
             arguments = _arguments(request, call)
             observation, is_error = await _run_tool(mcp, request, call.name, arguments, steps)
             record(Step(thought, call.name, arguments, observation, is_error))
@@ -112,9 +122,24 @@ async def run_agent(
             )
         messages.append({"role": "user", "content": results})
 
-    reason = "The agent reached its step limit without a decision."
-    decision = await escalate(mcp, request, ReasonCode.AGENT_STEP_LIMIT, reason, steps, record)
-    return AgentResult(decision, "step_limit", steps)
+    return await give_up(
+        Stop.STEP_LIMIT,
+        ReasonCode.AGENT_STEP_LIMIT,
+        "The agent reached its step limit without a decision.",
+    )
+
+
+def _rejected(tool_use_id: str, rejection: dict[str, Any]) -> ToolResultBlockParam:
+    """The issues, and how to fix them."""
+    return {
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": [
+            {"type": "text", "text": json.dumps(rejection)},
+            {"type": "text", "text": REJECTED},
+        ],
+        "is_error": True,
+    }
 
 
 def _calls_with_thoughts(content: list[Any]) -> list[tuple[str, Any]]:

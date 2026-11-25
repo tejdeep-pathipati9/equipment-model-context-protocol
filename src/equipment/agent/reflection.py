@@ -1,35 +1,21 @@
-"""Reflection: check the draft decision before it becomes final (docs/requirements.md 5).
+"""Reflection: review a draft decision before it becomes final (docs/requirements.md 5).
 
-Code check, then critic; a failing draft is revised and checked again. If it still fails, it is
-escalated by code, so an unreviewed draft never reaches the employee.
+A code check, then a critic. The ReAct loop (react.py) decides what happens to a rejected draft.
 """
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Any
 
 from anthropic.types import Message, ToolParam
-from mcp import Client
 
 from equipment.agent.llm import LLMClient
-from equipment.agent.prompts import CRITIC, REVISE
-from equipment.agent.react import (
-    SUBMIT,
-    SUBMIT_TOOL,
-    AgentResult,
-    Request,
-    Step,
-    escalate,
-    saved_escalation,
-)
+from equipment.agent.prompts import CRITIC
+from equipment.agent.react import SUBMIT, saved_escalation
+from equipment.agent.types import Draft, Request, Review, Step
 from equipment.domain.models import Basis, Decision, ReasonCode, Status
 
-Draft = dict[str, Any]  # the input of submit_decision
-
-MAX_REVISIONS = 2
 ELIGIBILITY = "check_request_eligibility"
+REQUIRED = ("decision", "reason_code", "item", "message_to_employee", "escalation_id")
 VERDICTS = {Decision.APPROVE: Status.ELIGIBLE, Decision.DENY: Status.NOT_ELIGIBLE}
 
 REVIEW = "submit_review"
@@ -59,89 +45,12 @@ REVIEW_TOOL: ToolParam = {
 }
 
 
-class Outcome(StrEnum):
-    CONFIRMED = "confirmed"  # the first draft passed
-    REVISED = "revised"  # a later draft passed
-    ESCALATED = "escalated"  # no draft passed
-    SKIPPED = "skipped"  # the decision was made by code, not drafted
-
-
-@dataclass(frozen=True)
-class Round:
-    """The checks of one draft. The critic only runs once the code check passes."""
-
-    draft: Draft
-    code_issues: list[str]
-    critic_issues: list[str] | None = None  # None = not run, or no verdict
-
-    @property
-    def passed(self) -> bool:
-        return not self.code_issues and self.critic_issues == []
-
-    @property
-    def no_verdict(self) -> bool:
-        return not self.code_issues and self.critic_issues is None
-
-    @property
-    def issues(self) -> list[str]:
-        return self.code_issues or self.critic_issues or []
-
-
-@dataclass(frozen=True)
-class Reflection:
-    decision: Draft
-    outcome: Outcome
-    rounds: list[Round] = field(default_factory=list)
-    reason: str | None = None  # why it was escalated
-
-
-async def reflect(
-    llm: LLMClient,
-    mcp: Client,
-    request: Request,
-    result: AgentResult,
-    max_revisions: int = MAX_REVISIONS,
-    on_round: Callable[[Round], None] = lambda round: None,
-) -> Reflection:
-    """Check, revise, check again; e.g. "by Friday" is caught, removed, then confirmed."""
-    if result.stop != "submitted":
-        return Reflection(result.decision, Outcome.SKIPPED)
-
-    draft, rounds = result.decision, []
-    while True:
-        current = await _review(llm, request, draft, result.steps)
-        rounds.append(current)
-        on_round(current)
-        if current.passed:
-            outcome = Outcome.CONFIRMED if len(rounds) == 1 else Outcome.REVISED
-            return Reflection(draft, outcome, rounds)
-        if current.no_verdict:
-            reason = "The critic gave no verdict on the draft."
-            break
-        reason = f"The draft did not pass review: {'; '.join(current.issues)}"
-        if len(rounds) > max_revisions:
-            break
-        revised = await revise(llm, request, draft, result.steps, current.issues)
-        if revised is None or _switches_escalation(draft, revised):
-            break
-        draft = revised
-
-    decision = await escalate(
-        mcp, request, ReasonCode.REFLECTION_FAILED, reason, result.steps, result.steps.append
-    )
-    return Reflection(decision, Outcome.ESCALATED, rounds, reason)
-
-
-async def _review(llm: LLMClient, request: Request, draft: Draft, steps: list[Step]) -> Round:
+async def review_draft(llm: LLMClient, request: Request, draft: Draft, steps: list[Step]) -> Review:
+    """Both checks of one draft, e.g. code check passes, critic finds "by Friday"."""
     code_issues = check_draft(draft, steps)
     if code_issues:
-        return Round(draft, code_issues)
-    return Round(draft, [], await critique(llm, request, draft, steps))
-
-
-def _switches_escalation(before: Draft, after: Draft) -> bool:
-    """Only code may start an escalation here, and nothing may undo one."""
-    return (before["decision"] == Decision.ESCALATE) != (after["decision"] == Decision.ESCALATE)
+        return Review(draft, code_issues)
+    return Review(draft, [], await critique(llm, request, draft, steps))
 
 
 # ---------------------------------------------------------------- code check
@@ -149,6 +58,9 @@ def _switches_escalation(before: Draft, after: Draft) -> bool:
 
 def check_draft(draft: Draft, steps: list[Step]) -> list[str]:
     """Problems code can prove, e.g. approve when the tool said not_eligible. Empty = pass."""
+    missing = [name for name in REQUIRED if name not in draft]
+    if missing:  # a cut-off reply can leave fields out
+        return [f"the draft is incomplete, missing: {', '.join(missing)}"]
     if draft["decision"] == Decision.ESCALATE:
         return _check_escalation(draft, steps)
     return _check_verdict(draft, steps)
@@ -207,7 +119,7 @@ def _last_eligibility(steps: list[Step]) -> dict[str, Any] | None:
     return None
 
 
-# ---------------------------------------------------------------- critic and reviser
+# ---------------------------------------------------------------- critic
 
 
 async def critique(
@@ -222,17 +134,6 @@ async def critique(
     if review is None:
         return None
     return [f'"{issue["quote"]}": {issue["problem"]}' for issue in review["issues"]]
-
-
-async def revise(
-    llm: LLMClient, request: Request, draft: Draft, steps: list[Step], issues: list[str]
-) -> Draft | None:
-    """A corrected draft, or None. Has no MCP tools, so it cannot escalate twice."""
-    content = json.dumps(_evidence(request, steps) | {"draft": draft, "issues": issues})
-    reply = await llm.create(
-        system=REVISE, messages=[{"role": "user", "content": content}], tools=[SUBMIT_TOOL]
-    )
-    return _tool_input(reply, SUBMIT)
 
 
 def _evidence(request: Request, steps: list[Step]) -> dict[str, Any]:

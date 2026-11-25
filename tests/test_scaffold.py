@@ -5,7 +5,7 @@ import importlib
 import pytest
 
 from equipment.agent.cli import build_parser, load_scenario
-from equipment.agent.react import Request
+from equipment.agent.types import Request
 from equipment.data import seed
 
 MODULES = [
@@ -23,6 +23,7 @@ MODULES = [
     "equipment.agent.prompts",
     "equipment.agent.reflection",
     "equipment.agent.trace",
+    "equipment.agent.types",
 ]
 
 
