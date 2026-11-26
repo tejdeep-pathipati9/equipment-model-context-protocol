@@ -9,11 +9,13 @@ import sqlite3
 from contextlib import closing
 from functools import partial
 
+import anthropic
+import httpx2
 import pytest
 from fakes import FakeLLM, accept, call, reply, thought
 
 from equipment.agent.mcp_client import connect
-from equipment.agent.prompts import REJECTED
+from equipment.agent.prompts import CRITIC, REJECTED
 from equipment.agent.react import run_agent
 from equipment.agent.reflection import critique
 from equipment.agent.types import Draft, FinalDecision, Outcome, Request, Stop
@@ -22,6 +24,7 @@ GOOD = {
     "decision": "approve",
     "reason_code": "WITHIN_LIMIT",
     "item": "monitor",
+    "extra_unit": False,
     "message_to_employee": "Approved. I cannot confirm a delivery date.",
     "escalation_reason": None,
 }
@@ -30,6 +33,7 @@ ESCALATION = {
     "decision": "escalate",
     "reason_code": "VAGUE_REQUEST",
     "item": None,
+    "extra_unit": False,
     "message_to_employee": "Your request names several items, so a person needs to decide.",
     "escalation_reason": "The request names several items.",
 }
@@ -320,6 +324,23 @@ def test_no_verdict_note_leaves_out_the_models_words(agent, server_db):
 
     [(_, _, reason)] = saved(server_db)
     assert ESCALATION["escalation_reason"] not in reason
+
+
+class CriticTimesOut(FakeLLM):
+    """The drafter answers; the critic's call times out."""
+
+    async def create(self, *, system, messages, tools):
+        if system == CRITIC:
+            raise anthropic.APITimeoutError(request=httpx2.Request("POST", "https://foundry"))
+        return await super().create(system=system, messages=messages, tools=tools)
+
+
+def test_critic_timeout_still_saves_the_escalation(agent, server_db):
+    llm = CriticTimesOut(look_up(), submit(ESCALATION))
+
+    agent(llm, partial(critique, llm))
+
+    assert [code for _, code, _ in saved(server_db)] == ["VAGUE_REQUEST"]
 
 
 def test_no_verdict_escalation_sends_the_standard_message(agent):

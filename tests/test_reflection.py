@@ -3,6 +3,8 @@
 import asyncio
 import json
 
+import anthropic
+import httpx2
 import pytest
 from fakes import FakeLLM, call, reply, thought
 from pydantic import ValidationError
@@ -30,6 +32,7 @@ def draft(**changes):
             "decision": "approve",
             "reason_code": "WITHIN_LIMIT",
             "item": "monitor",
+            "extra_unit": False,
             "message_to_employee": "Approved: one more monitor.",
             "escalation_reason": None,
         }
@@ -41,11 +44,12 @@ def as_json(proposed):
     return proposed.model_dump(mode="json")
 
 
-def escalation(reason_code="EXCEPTION_REQUEST", item="monitor"):
+def escalation(reason_code="EXCEPTION_REQUEST", item="monitor", extra_unit=False):
     return draft(
         decision="escalate",
         reason_code=reason_code,
         item=item,
+        extra_unit=extra_unit,
         message_to_employee="Your monitor is not due for a refresh, so a person needs to decide.",
         escalation_reason="Employee says the monitor broke.",
     )
@@ -63,6 +67,9 @@ NOT_FOUND = Step("", "get_employee_info", {}, {"error": "EMPLOYEE_NOT_FOUND"}, F
 LOOKED_UP = Step("", "get_employee_info", {}, {"id": "E001", "role": "employee"}, False)
 INVALID_ID = Step("", "get_employee_info", {}, {"error": "INVALID_EMPLOYEE_ID"}, False)
 HEADSET = eligibility("not_eligible", "REFRESH_NOT_DUE", "refresh", item="headset")
+DUE = eligibility("eligible", "REFRESH_DUE", "refresh")
+EXTRA = {"extra_unit": True}  # keep every unit and add one
+AT_MAX = {"decision": "deny", "reason_code": "AT_MAX_QUANTITY"}
 
 
 # ---------------------------------------------------------------- the draft
@@ -98,16 +105,10 @@ def test_draft_has_no_escalation_id():
             [NOT_ELIGIBLE],
             id="deny not eligible",
         ),
-        pytest.param(
-            draft(decision="deny", reason_code="AT_MAX_QUANTITY"),
-            [eligibility("eligible", "REFRESH_DUE", "refresh")],
-            id="deny extra unit at max, refresh due",
-        ),
-        pytest.param(
-            draft(decision="deny", reason_code="AT_MAX_QUANTITY"),
-            [NOT_DUE],
-            id="deny extra unit at max, refresh not due",
-        ),
+        pytest.param(draft(**AT_MAX, **EXTRA), [DUE], id="deny extra unit at max, refresh due"),
+        pytest.param(draft(**AT_MAX, **EXTRA), [NOT_DUE], id="deny extra unit, refresh not due"),
+        pytest.param(draft(reason_code="REFRESH_DUE"), [DUE], id="approve a replacement"),
+        pytest.param(draft(**EXTRA), [eligibility()], id="extra unit below the max"),
         pytest.param(draft(), [NOT_ELIGIBLE, eligibility()], id="last result for the item counts"),
         pytest.param(draft(), [eligibility(), HEADSET], id="a later lookup for another item"),
         pytest.param(escalation("UNKNOWN_EMPLOYEE", None), [NOT_FOUND], id="unknown employee"),
@@ -118,6 +119,7 @@ def test_draft_has_no_escalation_id():
         pytest.param(escalation(), [NOT_DUE], id="exception, not due"),
         pytest.param(escalation(), [NOT_ELIGIBLE], id="exception, role not eligible"),
         pytest.param(escalation(), [NOT_DUE, HEADSET], id="exception, then another item"),
+        pytest.param(escalation(**EXTRA), [DUE], id="exception for an extra unit at the max"),
     ],
 )
 def test_check_passes(proposed, steps):
@@ -138,18 +140,21 @@ def test_check_passes(proposed, steps):
         pytest.param(
             draft(decision="deny"), [eligibility()], "eligible", id="deny an eligible request"
         ),
+        pytest.param(draft(**AT_MAX, **EXTRA), [eligibility()], "refresh", id="at max, quantity"),
+        pytest.param(draft(**AT_MAX), [DUE], "extra unit", id="a replacement denied as extra"),
         pytest.param(
-            draft(decision="deny", reason_code="AT_MAX_QUANTITY"),
-            [eligibility()],
-            "refresh",
-            id="at max on basis quantity",
+            draft(reason_code="AT_MAX_QUANTITY"), [DUE], "extra unit", id="approve at max"
         ),
         pytest.param(
-            draft(reason_code="AT_MAX_QUANTITY"),
-            [eligibility("eligible", "REFRESH_DUE", "refresh")],
-            "REFRESH_DUE",
-            id="approve with a deny code",
+            draft(reason_code="REFRESH_DUE", **EXTRA), [DUE], "AT_MAX_QUANTITY", id="extra approved"
         ),
+        pytest.param(
+            draft(decision="deny", reason_code="REFRESH_NOT_DUE", **EXTRA),
+            [NOT_DUE],
+            "AT_MAX_QUANTITY",
+            id="extra denied as not due",
+        ),
+        pytest.param(escalation(), [DUE], "replacement", id="exception, replacement allowed"),
         pytest.param(
             draft(reason_code="RECORDS_INCOMPLETE"),
             [eligibility("needs_review", "RECORDS_INCOMPLETE", None)],
@@ -286,6 +291,40 @@ def test_critic_sees_request_draft_and_results_but_not_thoughts():
     assert sent["tools"] == [REVIEW_TOOL]
 
 
+SENT = httpx2.Request("POST", "https://foundry.example/v1/messages")
+
+
+def status_error(error_type, status):
+    response = httpx2.Response(status, request=SENT)
+    return error_type(f"HTTP {status}", response=response, body=None)
+
+
+class UnavailableLLM:
+    def __init__(self, error):
+        self.error = error
+
+    async def create(self, **sent):
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(anthropic.APITimeoutError(request=SENT), id="timeout"),
+        pytest.param(anthropic.APIConnectionError(request=SENT), id="no connection"),
+        pytest.param(status_error(anthropic.RateLimitError, 429), id="rate limited"),
+        pytest.param(status_error(anthropic.InternalServerError, 500), id="server error"),
+    ],
+)
+def test_unavailable_critic_gives_no_verdict(error):
+    assert run_critique(UnavailableLLM(error)) is None
+
+
+def test_bad_request_to_the_critic_is_not_hidden():
+    with pytest.raises(anthropic.BadRequestError):
+        run_critique(UnavailableLLM(status_error(anthropic.BadRequestError, 400)))
+
+
 @pytest.mark.parametrize(
     "no_verdict",
     [
@@ -364,6 +403,16 @@ def test_format_review_shows_the_draft_and_the_critic_issues():
 
 def test_critic_checks_the_note_for_the_reviewer():
     assert "escalation_reason" in CRITIC
+
+
+def test_format_review_shows_an_extra_unit():
+    current = Review(as_json(draft(**AT_MAX, **EXTRA)), [])
+
+    assert "  Extra unit:  yes" in format_review(1, current)
+
+
+def test_critic_checks_the_extra_unit_reading():
+    assert "extra_unit does not match the employee's words" in CRITIC
 
 
 def test_format_review_shows_the_note_for_the_reviewer():

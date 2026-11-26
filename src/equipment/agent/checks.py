@@ -48,10 +48,16 @@ def _check_verdict(draft: Draft, steps: list[Step]) -> list[str]:
         return [f"{decision}, but there is no eligibility result for {draft.item or 'the item'}"]
     if result.status == Status.NEEDS_REVIEW:  # requirements 4, rule 3 comes before rule 6
         return [f"{decision}, but eligibility is needs_review ({result.reason_code}): escalate"]
-    if decision == Decision.DENY and code == ReasonCode.AT_MAX_QUANTITY:
+    # Rule 6: at the max (basis refresh), an extra unit is denied whatever the refresh says.
+    extra_at_max = draft.extra_unit and result.basis == Basis.REFRESH
+    if code == ReasonCode.AT_MAX_QUANTITY:
         if result.basis != Basis.REFRESH:
             return [f"{code} needs basis refresh, but the basis is {result.basis}"]
+        if decision != Decision.DENY or not draft.extra_unit:
+            return [f"{code} only denies an extra unit (extra_unit true), not a replacement"]
         return []
+    if extra_at_max:
+        return [f"{decision}, but an extra unit at the max is denied with AT_MAX_QUANTITY"]
     if result.status != VERDICTS[decision]:
         return [f"{decision}, but eligibility is {result.status}"]
     if code != result.reason_code:
@@ -88,6 +94,8 @@ def _check_escalation(draft: Draft, steps: list[Step]) -> list[str]:
         return [f"{code}, but eligibility is {status} ({verdict})"]
     if code == ReasonCode.EXCEPTION_REQUEST and result.basis == Basis.QUANTITY:
         return [f"{code}, but policy allows one more unit ({verdict}): approve"]
+    if code == ReasonCode.EXCEPTION_REQUEST and status == Status.ELIGIBLE and not draft.extra_unit:
+        return [f"{code}, but policy allows a replacement ({verdict}): approve"]
     return []
 
 

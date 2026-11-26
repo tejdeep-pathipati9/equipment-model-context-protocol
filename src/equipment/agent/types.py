@@ -24,6 +24,9 @@ class Draft(ModelOutput):
     decision: Decision
     reason_code: ReasonCode
     item: str | None
+    extra_unit: bool = Field(
+        description="true only if the employee asks to keep every unit they hold and add one more"
+    )
     message_to_employee: str = Field(min_length=1)
     escalation_reason: str | None = Field(
         description="escalate only: a short note for the human reviewer; null otherwise"

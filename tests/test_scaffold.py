@@ -67,12 +67,51 @@ def test_server_refuses_a_database_from_an_older_schema(db_path):
         pass
 
 
-def test_seed_says_how_to_replace_an_older_database(db_path, capsys):
+def test_seed_refuses_an_older_database(db_path):
     old_database(db_path)
+
+    with pytest.raises(SystemExit, match="older schema"):
+        seed.main()
+
+
+@pytest.fixture
+def interrupted_seed(db_path, monkeypatch):
+    """A first seed that stops after the schema is created, before the rows are written."""
+
+    def stop(conn):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patch:
+        patch.setattr(seed, "seed_data", stop)
+        with pytest.raises(KeyboardInterrupt):
+            seed.main()
+
+
+def test_database_appears_only_when_complete(db_path, monkeypatch):
+    """A process killed mid-build (no cleanup runs) must not leave a half-built database."""
+    exists_while_building = []
+    write_rows = seed.seed_data
+
+    def watch(conn):
+        exists_while_building.append(db_path.exists())
+        write_rows(conn)
+
+    monkeypatch.setattr(seed, "seed_data", watch)
 
     seed.main()
 
-    assert "older schema" in capsys.readouterr().out
+    assert exists_while_building == [False]
+
+
+def test_interrupted_seed_leaves_no_database(interrupted_seed, db_path):
+    assert not db_path.exists()
+
+
+def test_seed_after_an_interruption_creates_every_employee(interrupted_seed, db_path):
+    seed.main()
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM employees").fetchone()[0] == len(seed.EMPLOYEES)
 
 
 def test_cli_parses_scenario():

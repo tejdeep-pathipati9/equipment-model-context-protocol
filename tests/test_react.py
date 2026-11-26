@@ -19,6 +19,7 @@ DECISION = {
     "decision": "approve",
     "reason_code": "WITHIN_LIMIT",
     "item": "monitor",
+    "extra_unit": False,
     "message_to_employee": "Approved: you can have one more monitor.",
     "escalation_reason": None,
 }

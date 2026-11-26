@@ -34,6 +34,7 @@ def format_review(number: int, review: Review) -> str:
         f"Reflection: draft {number}",
         f"  Decision:    {str(draft.get('decision', '-')).upper()} ({draft.get('reason_code')})",
         f"  Message:     {draft.get('message_to_employee', '-')}",
+        *(["  Extra unit:  yes"] if draft.get("extra_unit") else []),
         *([f"  Reviewer:    {note}"] if note else []),
         f"  Code check:  {_result(review.code_issues)}",
         f"  Critic:      {critic}",

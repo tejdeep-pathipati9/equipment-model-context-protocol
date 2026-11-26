@@ -112,7 +112,7 @@ applied **in order**; the first match wins.
 | 3 | Eligibility status is `needs_review` | Escalate | eligibility reason code (`ITEM_NOT_IN_CATALOG`, `RECORDS_INCOMPLETE`) |
 | 4 | A factual claim in the request contradicts the records (§4.1) | Escalate | `CLAIM_CONTRADICTS_RECORDS` |
 | 5 | Approval would need an exception (`not_eligible`, **or** an additional unit at the max) **and** the employee claims breakage/loss/damage or asks for an exception | Escalate | `EXCEPTION_REQUEST` |
-| 6 | Basis is `refresh` and the employee explicitly asks for an **additional** unit (keeping all current ones) | **Deny** | `AT_MAX_QUANTITY` |
+| 6 | Basis is `refresh` and the employee explicitly asks for an **additional** unit (keeping all current ones; the draft's `extra_unit` is true) | **Deny** | `AT_MAX_QUANTITY` |
 | 7 | `not_eligible` | **Deny** | eligibility reason code |
 | 8 | `eligible` | **Approve** | eligibility reason code |
 
@@ -164,6 +164,7 @@ Every escalation is saved with `flag_for_human_review`, and the reply includes i
   "decision": "approve | deny | escalate",
   "reason_code": "WITHIN_LIMIT",
   "item": "monitor",
+  "extra_unit": false,
   "message_to_employee": "…",
   "escalation_id": null
 }
@@ -182,11 +183,12 @@ The message to the employee must:
 To escalate, the draft has a `reason_code` and an `escalation_reason` (a note for the human
 reviewer), but no escalation ID. Nothing is saved until the draft passes reflection:
 - a code check confirms the decision matches the eligibility result **for the draft's item**
-  (`approve` ⇒ `eligible`; `deny` ⇒ `not_eligible`, or `AT_MAX_QUANTITY` with basis `refresh`;
-  `escalate` ⇒ the reason code fits the results in rule order, e.g. `EXCEPTION_REQUEST` is rejected
-  when policy allows one more unit);
-- a separate LLM critic checks the decision, the message and the reviewer's note against the tool
-  observations.
+  (`approve` ⇒ `eligible`; `deny` ⇒ `not_eligible`, or `AT_MAX_QUANTITY` with basis `refresh` and
+  `extra_unit` true, never for a replacement; `escalate` ⇒ the reason code fits the results in
+  rule order, e.g. `EXCEPTION_REQUEST` is rejected when policy allows one more unit or a
+  replacement);
+- a separate LLM critic checks the decision, the message, the reviewer's note and the
+  `extra_unit` reading against the request and the tool observations.
 
 Only then does the system call `flag_for_human_review`, once, and add the reference to the message.
 If the save is not confirmed (an error, a timeout, or a reply without an open escalation ID), the
