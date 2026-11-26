@@ -77,9 +77,13 @@ async def run(request: Request) -> int:
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.employee and not args.text:
-        parser.error("--text is required with --employee")
-    request = load_scenario(args.scenario) if args.scenario else Request(args.employee, args.text)
+    if args.scenario is not None:  # 0 is a number too, and load_scenario rejects it
+        request = load_scenario(args.scenario)
+    else:
+        try:
+            request = Request(args.employee, args.text)
+        except ValueError as error:
+            parser.error(f"{error} (--employee and --text)")
     try:
         sys.exit(asyncio.run(run(request)))
     except ServerUnavailable as error:

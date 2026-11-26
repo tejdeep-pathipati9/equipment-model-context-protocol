@@ -52,8 +52,18 @@ def validation_issues(error: ValidationError) -> list[str]:
 
 @dataclass(frozen=True)
 class Request:
+    """Checked once, wherever it comes from: " E001 " -> "E001"; the text is kept as written."""
+
     employee_id: str  # from metadata, never from the text
     text: str
+
+    def __post_init__(self) -> None:
+        employee_id = (self.employee_id or "").strip()
+        if not employee_id:
+            raise ValueError("the request needs an employee ID")
+        if not (self.text or "").strip():
+            raise ValueError("the request needs text")
+        object.__setattr__(self, "employee_id", employee_id)  # frozen, so set it directly
 
 
 @dataclass(frozen=True)
