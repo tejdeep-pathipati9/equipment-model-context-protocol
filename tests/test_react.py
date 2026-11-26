@@ -112,6 +112,22 @@ def test_parallel_calls_answered_in_one_message(agent):
     assert [result["tool_use_id"] for result in tool_results(llm, 1)] == ["c1", "c2"]
 
 
+def test_thought_label_is_removed_from_every_text_block(agent):
+    llm = FakeLLM(
+        reply(
+            thought("Thought: Look up E001."),
+            thought("Thought: Then check the monitor."),
+            call("get_employee_info", {"employee_id": "E001"}),
+        ),
+        reply(check()),
+        reply(submit()),
+    )
+
+    result = agent(llm)
+
+    assert result.steps[0].thought == "Look up E001. Then check the monitor."
+
+
 def test_second_call_in_a_turn_points_to_the_first(agent):
     llm = FakeLLM(
         reply(

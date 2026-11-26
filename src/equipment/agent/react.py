@@ -210,11 +210,10 @@ def _calls_with_thoughts(content: list[Any]) -> list[tuple[str, Any]]:
     """Each tool call paired with the text the model wrote just before it."""
     calls, text = [], []
     for block in content:
-        if block.type == "text":
-            text.append(block.text)
+        if block.type == "text":  # each block may start with its own "Thought:"
+            text.append(block.text.strip().removeprefix("Thought:").strip())
         elif block.type == "tool_use":
-            thought = " ".join(text).strip().removeprefix("Thought:").strip()
-            calls.append((thought, block))
+            calls.append((" ".join(part for part in text if part), block))
             text = []
     return calls
 
