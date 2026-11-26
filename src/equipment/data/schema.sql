@@ -1,6 +1,9 @@
 -- Schema from PLAN.md §5. CHECK constraints refuse bad values when they are written, so the
 -- tools never read them. `date(x) IS x` holds only for a real YYYY-MM-DD date.
 
+-- Raise with every schema change: a database made by an older schema is refused (seed.py).
+PRAGMA user_version = 2;
+
 CREATE TABLE IF NOT EXISTS employees (
     id        TEXT PRIMARY KEY,
     name      TEXT NOT NULL,

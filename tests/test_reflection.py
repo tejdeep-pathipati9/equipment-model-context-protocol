@@ -256,6 +256,9 @@ def test_escalation_check_passes(reason_code, steps):
         ),
         pytest.param("ITEM_NOT_IN_CATALOG", [NOT_DUE], "not_eligible", id="item is in the catalog"),
         pytest.param("AGENT_STEP_LIMIT", [], "code", id="code-only reason"),
+        pytest.param(
+            "VAGUE_REQUEST", [NOT_FOUND], "UNKNOWN_EMPLOYEE", id="unknown employee comes first"
+        ),
     ],
 )
 def test_escalation_check_finds_the_problem(reason_code, steps, problem):

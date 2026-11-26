@@ -32,10 +32,11 @@ def check_escalation(proposal: Proposal, steps: list[Step]) -> list[str]:
     code = proposal.reason_code
     if code in SET_BY_CODE:
         return [f"{code} is set by code, not by the agent"]
+    not_found = any(_error(step) == ErrorCode.EMPLOYEE_NOT_FOUND for step in steps)
     if code == ReasonCode.UNKNOWN_EMPLOYEE:
-        if any(_error(step) == ErrorCode.EMPLOYEE_NOT_FOUND for step in steps):
-            return []
-        return [f"{code}, but no lookup returned EMPLOYEE_NOT_FOUND"]
+        return [] if not_found else [f"{code}, but no lookup returned EMPLOYEE_NOT_FOUND"]
+    if not_found:  # rule 1 comes before every other rule
+        return [f"{code}, but the employee was not found: escalate with UNKNOWN_EMPLOYEE"]
     if code == ReasonCode.VAGUE_REQUEST:  # rule 2 comes before every eligibility rule
         return []
 

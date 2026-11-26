@@ -286,6 +286,22 @@ def test_critic_sees_the_proposed_escalation(agent):
     assert proposal == Proposal(reason_code="VAGUE_REQUEST", reason="Breakage cannot be verified.")
 
 
+def test_escalation_is_saved_when_the_critic_gives_no_verdict(agent, server_db):
+    llm = FakeLLM(look_up(), flag("VAGUE_REQUEST"), REFUSE)
+
+    agent(llm, FakeCritic(None))
+
+    assert [code for _, code, _ in saved(server_db)] == ["VAGUE_REQUEST"]
+
+
+def test_no_verdict_on_an_escalation_is_not_a_revision(agent):
+    llm = FakeLLM(look_up(), flag("VAGUE_REQUEST"), submit(GOOD), REFUSE)
+
+    result = agent(llm, FakeCritic(None), max_revisions=1)
+
+    assert result.stop == Stop.REFUSED  # only the approval was rejected
+
+
 def test_rejected_escalation_counts_as_a_revision(agent):
     llm = FakeLLM(look_up(), flag("EXCEPTION_REQUEST"))
 

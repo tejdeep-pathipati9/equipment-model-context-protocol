@@ -19,7 +19,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from equipment import config, tools
 from equipment.config import Transport
-from equipment.data.seed import db_path
+from equipment.data.seed import db_path, is_current
 from equipment.data.sqlite_repo import SqliteRepository
 
 mcp = MCPServer("equipment")
@@ -39,6 +39,10 @@ def repository() -> Generator[SqliteRepository]:
     if not path.exists():
         raise FileNotFoundError(f"database {path} not found; run `uv run seed` first")
     with closing(sqlite3.connect(path)) as conn:
+        if not is_current(conn):
+            raise RuntimeError(
+                f"database {path} is from an older schema; delete it, then `uv run seed`"
+            )
         yield SqliteRepository(conn)
 
 

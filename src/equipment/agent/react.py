@@ -64,7 +64,7 @@ async def run_agent(
         """Keep a review; True when the run must stop (no verdict, or too many rejections)."""
         reviews.append(review)
         on_review(review)
-        rejections = sum(bool(kept.issues) for kept in reviews)
+        rejections = sum(bool(kept.issues) and not kept.no_verdict for kept in reviews)
         return bool(review.issues) and (review.no_verdict or rejections > max_revisions)
 
     async def give_up(stop: Stop, reason_code: ReasonCode, reason: str) -> AgentResult:
@@ -116,7 +116,9 @@ async def run_agent(
                 thought = f"(same turn as step {first_step})"
             arguments = _arguments(request, call)
             review = await _review_escalation(critic, request, call.name, arguments, steps)
-            if review and review.issues:
+            # No verdict on an escalation that passed the code check: save it anyway, since a
+            # human will see it, rather than lose its reason code to REFLECTION_FAILED.
+            if review and review.issues and not review.no_verdict:
                 observation = {"accepted": False, "issues": review.issues}
                 record(Step(thought, call.name, arguments, observation, True))
                 if keep(review):

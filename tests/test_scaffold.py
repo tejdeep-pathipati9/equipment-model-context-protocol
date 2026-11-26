@@ -1,9 +1,12 @@
 """Scaffold checks: package imports, seed creates the schema, CLI parses args."""
 
 import importlib
+import sqlite3
+from contextlib import closing
 
 import pytest
 
+from equipment import server
 from equipment.agent.cli import build_parser, load_scenario
 from equipment.agent.types import Request
 from equipment.data import seed
@@ -45,6 +48,31 @@ def test_seed_main_creates_db_once(db_path, capsys):
 
     seed.main()
     assert "already exists" in capsys.readouterr().out
+
+
+def old_database(path):
+    """A database made before the schema had a version (and its CHECK constraints)."""
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute("CREATE TABLE employees (id TEXT PRIMARY KEY)")
+
+
+def test_new_database_has_the_current_schema_version(conn):
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == seed.SCHEMA_VERSION
+
+
+def test_server_refuses_a_database_from_an_older_schema(db_path):
+    old_database(db_path)
+
+    with pytest.raises(RuntimeError, match="older schema"), server.repository():
+        pass
+
+
+def test_seed_says_how_to_replace_an_older_database(db_path, capsys):
+    old_database(db_path)
+
+    seed.main()
+
+    assert "older schema" in capsys.readouterr().out
 
 
 def test_cli_parses_scenario():
