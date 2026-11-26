@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from equipment.domain.models import Decision, ReasonCode
+from equipment.domain.models import Basis, Decision, ReasonCode, Status
 
 # ---------------------------------------------------------------- model outputs
 
@@ -40,6 +40,23 @@ class CriticIssue(ModelOutput):
 
 class CriticReview(ModelOutput):
     issues: list[CriticIssue]
+
+
+# ---------------------------------------------------------------- tool results
+
+
+class Eligibility(BaseModel):
+    """The fields of a check_request_eligibility result that the code check relies on.
+
+    The result has more fields (held, max_qty, ...); they are ignored here.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    item: str
+    status: Status
+    reason_code: ReasonCode
+    basis: Basis | None
 
 
 def validation_issues(error: ValidationError) -> list[str]:

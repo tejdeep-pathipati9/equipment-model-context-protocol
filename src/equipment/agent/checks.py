@@ -5,7 +5,9 @@ Runs before the critic, on every draft and on every escalation before it is save
 
 from typing import Any
 
-from equipment.agent.types import Draft, Proposal, Step
+from pydantic import ValidationError
+
+from equipment.agent.types import Draft, Eligibility, Proposal, Step
 from equipment.domain.models import Basis, Decision, ErrorCode, ReasonCode, Status
 
 ELIGIBILITY = "check_request_eligibility"
@@ -40,12 +42,12 @@ def check_escalation(proposal: Proposal, steps: list[Step]) -> list[str]:
     result = _last_eligibility(steps)
     if result is None:
         return [f"{code}, but there is no eligibility result"]
-    status, verdict = result["status"], result["reason_code"]
+    status, verdict = result.status, result.reason_code
     if status == Status.NEEDS_REVIEW and code != verdict:
         return [f"{code}, but eligibility is needs_review ({verdict}): escalate with {verdict}"]
     if status != Status.NEEDS_REVIEW and code in NEEDS_REVIEW_CODES:
         return [f"{code}, but eligibility is {status} ({verdict})"]
-    if code == ReasonCode.EXCEPTION_REQUEST and result["basis"] == Basis.QUANTITY:
+    if code == ReasonCode.EXCEPTION_REQUEST and result.basis == Basis.QUANTITY:
         return [f"{code}, but policy allows one more unit ({verdict}): approve"]
     return []
 
@@ -70,21 +72,21 @@ def _check_verdict(draft: Draft, steps: list[Step]) -> list[str]:
     result = _last_eligibility(steps)
     if result is None:
         return [f"{decision}, but there is no eligibility result"]
-    if result["status"] == Status.NEEDS_REVIEW:  # requirements 4, rule 3 comes before rule 6
-        return [f"{decision}, but eligibility is needs_review ({result['reason_code']}): escalate"]
+    if result.status == Status.NEEDS_REVIEW:  # requirements 4, rule 3 comes before rule 6
+        return [f"{decision}, but eligibility is needs_review ({result.reason_code}): escalate"]
 
     issues = []
     if draft.escalation_id is not None:
         issues.append(f"{decision}, but escalation_id is {draft.escalation_id}")
-    if draft.item != result["item"]:
-        issues.append(f"item is {draft.item}, but eligibility was checked for {result['item']}")
+    if draft.item != result.item:
+        issues.append(f"item is {draft.item}, but eligibility was checked for {result.item}")
     if decision == Decision.DENY and code == ReasonCode.AT_MAX_QUANTITY:
-        if result["basis"] != Basis.REFRESH:
-            issues.append(f"{code} needs basis refresh, but the basis is {result['basis']}")
-    elif result["status"] != VERDICTS[decision]:
-        issues.append(f"{decision}, but eligibility is {result['status']}")
-    elif code != result["reason_code"]:
-        issues.append(f"reason code is {code}, but eligibility says {result['reason_code']}")
+        if result.basis != Basis.REFRESH:
+            issues.append(f"{code} needs basis refresh, but the basis is {result.basis}")
+    elif result.status != VERDICTS[decision]:
+        issues.append(f"{decision}, but eligibility is {result.status}")
+    elif code != result.reason_code:
+        issues.append(f"reason code is {code}, but eligibility says {result.reason_code}")
     return issues
 
 
@@ -109,10 +111,13 @@ def _error(step: Step) -> Any:
     return step.observation.get("error") if isinstance(step.observation, dict) else None
 
 
-def _last_eligibility(steps: list[Step]) -> dict[str, Any] | None:
+def _last_eligibility(steps: list[Step]) -> Eligibility | None:
+    """The last complete eligibility result; errors and incomplete results do not count."""
     for step in reversed(steps):
         if step.action != ELIGIBILITY or step.is_error:
             continue
-        if isinstance(step.observation, dict) and "status" in step.observation:
-            return step.observation
+        try:
+            return Eligibility.model_validate(step.observation)
+        except ValidationError:
+            continue
     return None

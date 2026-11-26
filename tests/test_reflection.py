@@ -191,6 +191,23 @@ def test_failed_tool_results_do_not_count():
     assert "no eligibility" in check_draft(draft(), [unknown, text, blocked])[0]
 
 
+@pytest.mark.parametrize(
+    "observation",
+    [
+        pytest.param({"status": "eligible", "reason_code": "WITHIN_LIMIT"}, id="no item"),
+        pytest.param({"item": "monitor", "status": "eligible"}, id="no reason code"),
+        pytest.param(
+            {"item": "monitor", "status": "maybe", "reason_code": "WITHIN_LIMIT"},
+            id="unknown status",
+        ),
+    ],
+)
+def test_incomplete_eligibility_result_does_not_count(observation):
+    incomplete = Step("", "check_request_eligibility", {}, observation, False)
+
+    assert check_draft(draft(), [incomplete]) == ["approve, but there is no eligibility result"]
+
+
 def test_check_reports_every_problem():
     proposed = draft(reason_code="REFRESH_DUE", item="laptop")
 
