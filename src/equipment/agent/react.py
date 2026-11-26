@@ -8,6 +8,7 @@ escalated by code, never left to the model.
 """
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -25,6 +26,7 @@ from equipment.agent.types import (
     Critic,
     Draft,
     FinalDecision,
+    Receipt,
     Request,
     Review,
     Step,
@@ -42,10 +44,13 @@ SUBMIT_TOOL: ToolParam = {
 }
 FLAG = "flag_for_human_review"  # the one tool that writes: called by code, never offered
 REMINDER = f"Call {SUBMIT} with your final decision."
+THOUGHT_LABEL = re.compile(r"^\s*Thought:", re.MULTILINE)
 
 HANDED_OFF = "Sent for human review. Reference: {escalation_id}."
 UNDECIDED = "Your request could not be decided automatically."
-NOT_RECORDED = "Your request could not be recorded for human review. Please submit it again."
+NOT_CONFIRMED = (
+    "Your request could not be confirmed as sent for human review. Please submit it again."
+)
 
 
 async def run_agent(
@@ -175,8 +180,9 @@ def _unreviewed(draft: Draft, steps: list[Step]) -> str:
         if result
         else "no eligibility result"
     )
+    # The model's own note is left out: nobody reviewed it. The request is saved separately.
     return (
-        f"Proposed {draft.reason_code}: {draft.escalation_reason} Verified by code: {verified}. "
+        f"Proposed {draft.reason_code}. Verified by code: {verified}. "
         "Not reviewed: the critic gave no verdict."
     )
 
@@ -198,8 +204,8 @@ def _calls_with_thoughts(content: list[Any]) -> list[tuple[str, Any]]:
     """Each tool call paired with the text the model wrote just before it."""
     calls, text = [], []
     for block in content:
-        if block.type == "text":  # each block may start with its own "Thought:"
-            text.append(block.text.strip().removeprefix("Thought:").strip())
+        if block.type == "text":  # a "Thought:" label may start any line of any block
+            text.append(" ".join(THOUGHT_LABEL.sub("", block.text).split()))
         elif block.type == "tool_use":
             calls.append((" ".join(part for part in text if part), block))
             text = []
@@ -238,11 +244,19 @@ async def finish(
     thought = "The escalation passed review; the system saves it once."
     escalation_id = await _save(mcp, request, draft.reason_code, reason, thought, record)
     if escalation_id is None:
-        return FinalDecision.from_draft(draft, message=NOT_RECORDED)
+        return FinalDecision.from_draft(draft, message=NOT_CONFIRMED)
     handed_off = HANDED_OFF.format(escalation_id=escalation_id)
     return FinalDecision.from_draft(
         draft, escalation_id, f"{draft.message_to_employee} {handed_off}"
     )
+
+
+def _receipt(observation: dict[str, Any]) -> str | None:
+    """The escalation ID, only from a complete receipt for an open escalation."""
+    try:
+        return Receipt.model_validate(observation).escalation_id
+    except ValidationError:
+        return None
 
 
 async def escalate(
@@ -257,7 +271,7 @@ async def escalate(
     if escalation_id:
         message = f"{UNDECIDED} {HANDED_OFF.format(escalation_id=escalation_id)}"
     else:
-        message = NOT_RECORDED
+        message = NOT_CONFIRMED
     return FinalDecision(
         decision=Decision.ESCALATE,
         reason_code=reason_code,
@@ -282,8 +296,16 @@ async def _save(
         "reason": reason,
         "reason_code": reason_code,
     }
-    observation = result_payload(await mcp.call_tool(FLAG, arguments))
+    try:
+        result = await mcp.call_tool(FLAG, arguments)
+        observation, failed = result_payload(result), bool(result.is_error)
+    except Exception as error:  # e.g. a timeout: it may have been saved, so it is unconfirmed
+        observation, failed = (
+            {"error": f"the save could not be confirmed: {type(error).__name__}"},
+            True,
+        )
     if not isinstance(observation, dict):  # the safe path must not crash on a plain-text result
         observation = {"error": str(observation)}
-    record(Step(thought, FLAG, arguments, observation, "error" in observation, actor="code"))
-    return observation.get("escalation_id")
+    escalation_id = None if failed else _receipt(observation)
+    record(Step(thought, FLAG, arguments, observation, escalation_id is None, actor="code"))
+    return escalation_id

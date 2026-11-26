@@ -189,13 +189,17 @@ reviewer), but no escalation ID. Nothing is saved until the draft passes reflect
   observations.
 
 Only then does the system call `flag_for_human_review`, once, and add the reference to the message.
-If the save fails, the reply says it could not be recorded. A draft that fails review goes back to
-the agent with its issues, so it can reword it or look up a missing fact; nothing was saved, so it
-may still change its decision. After 2 rejections, the next one escalates the request instead
-(`REFLECTION_FAILED`). If the critic gives no verdict on an escalation that passed the code check,
-it is saved with its proposed reason code, a standard message, and a reviewer's note saying it was
-not reviewed. If the agent exceeds 8 reasoning steps, the request is escalated
-(`AGENT_STEP_LIMIT`). If the model declines to answer, it is escalated (`AGENT_REFUSED`).
+If the save is not confirmed (an error, a timeout, or a reply without an open escalation ID), the
+reply says so and asks the employee to submit again. Within one run there is at most one save;
+across resubmissions a duplicate is possible, which a stable request ID would prevent.
+
+A draft that fails review goes back to the agent with its issues, so it can reword it or look up a
+missing fact; nothing was saved, so it may still change its decision. After 2 rejections, the next
+one escalates the request instead (`REFLECTION_FAILED`). If the critic gives no verdict on an
+escalation that passed the code check, it is saved with its proposed reason code, a standard
+message, and a reviewer's note built by code from the verified facts, saying it was not reviewed.
+If the agent exceeds 8 reasoning steps, the request is escalated (`AGENT_STEP_LIMIT`). If the
+model declines to answer, it is escalated (`AGENT_REFUSED`).
 
 ---
 

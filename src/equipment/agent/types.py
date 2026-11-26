@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -63,6 +63,13 @@ class Eligibility(BaseModel):
     status: Status
     reason_code: ReasonCode
     basis: Basis | None
+
+
+class Receipt(BaseModel):
+    """What flag_for_human_review returns once it saved the escalation; else it is unconfirmed."""
+
+    escalation_id: str = Field(min_length=1)
+    status: Literal["open"]
 
 
 def validation_issues(error: ValidationError) -> list[str]:
@@ -181,7 +188,7 @@ class AgentResult:
 
     @property
     def recorded(self) -> bool:
-        """False for an escalation that could not be saved: no human will ever see it."""
+        """False for an escalation whose save was not confirmed: no human may ever see it."""
         decision = self.decision
         return decision.decision != Decision.ESCALATE or decision.escalation_id is not None
 

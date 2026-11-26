@@ -315,6 +315,13 @@ def test_no_verdict_escalation_tells_the_reviewer(agent, server_db):
     assert "the critic gave no verdict" in reason
 
 
+def test_no_verdict_note_leaves_out_the_models_words(agent, server_db):
+    agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic(None))
+
+    [(_, _, reason)] = saved(server_db)
+    assert ESCALATION["escalation_reason"] not in reason
+
+
 def test_no_verdict_escalation_sends_the_standard_message(agent):
     result = agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic(None))
 

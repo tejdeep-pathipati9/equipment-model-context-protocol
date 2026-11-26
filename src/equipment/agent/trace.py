@@ -77,4 +77,4 @@ def format_decision(decision: FinalDecision) -> str:
 def _escalation(decision: FinalDecision) -> str:
     if decision.escalation_id:
         return decision.escalation_id
-    return "NOT RECORDED" if decision.decision == Decision.ESCALATE else "-"
+    return "NOT CONFIRMED" if decision.decision == Decision.ESCALATE else "-"

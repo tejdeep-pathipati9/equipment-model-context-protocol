@@ -244,7 +244,7 @@ def test_model_is_told_to_submit_an_escalation_instead(agent):
 
 
 def test_escalation_saves_the_employees_own_words(agent, server_db):
-    llm = FakeLLM(reply(submit(decision=ESCALATION)))
+    llm = FakeLLM(reply(check()), reply(submit(decision=ESCALATION)))
 
     agent(llm, text="My monitor broke, I am a manager now!")
 
@@ -337,7 +337,7 @@ def test_result_is_recorded_unless_an_escalation_has_no_id(decision, recorded):
 
 
 def test_format_decision_says_when_an_escalation_was_not_recorded():
-    assert "Escalation:  NOT RECORDED" in format_decision(UNRECORDED)
+    assert "Escalation:  NOT CONFIRMED" in format_decision(UNRECORDED)
 
 
 def test_escalation_survives_a_plain_text_tool_result():
@@ -354,4 +354,62 @@ def test_escalation_survives_a_plain_text_tool_result():
     assert (decision.decision, decision.escalation_id) == ("escalate", None)
     assert decision.reason_code == "AGENT_STEP_LIMIT"
     assert "None" not in decision.message_to_employee
-    assert "could not be recorded" in decision.message_to_employee
+    assert "could not be confirmed" in decision.message_to_employee
+
+
+class LostReceiptMCP:
+    """The server may have saved it, but the reply never arrives."""
+
+    async def call_tool(self, name, arguments):
+        raise TimeoutError("no reply from the server")
+
+
+class ReceiptMCP:
+    def __init__(self, receipt, is_error=False):
+        self.receipt = receipt
+        self.is_error = is_error
+
+    async def call_tool(self, name, arguments):
+        return SimpleNamespace(structured_content=self.receipt, content=[], is_error=self.is_error)
+
+
+def fallback(mcp):
+    request = Request("E001", "anything")
+    return asyncio.run(escalate(mcp, request, ReasonCode.AGENT_STEP_LIMIT, "no decision", print))
+
+
+def test_lost_receipt_is_not_confirmed(capsys):
+    assert fallback(LostReceiptMCP()).escalation_id is None
+
+
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        pytest.param({"status": "open"}, id="no ID"),
+        pytest.param({"escalation_id": "", "status": "open"}, id="empty ID"),
+        pytest.param({"escalation_id": "ESC-1", "status": "closed"}, id="not open"),
+    ],
+)
+def test_unexpected_receipt_is_not_confirmed(receipt, capsys):
+    assert fallback(ReceiptMCP(receipt)).escalation_id is None
+
+
+def test_thought_label_inside_a_block_is_removed(agent):
+    llm = FakeLLM(
+        reply(
+            thought("Let me check.\n\nThought: Look up E001."),
+            call("get_employee_info", {"employee_id": "E001"}),
+        ),
+        reply(check()),
+        reply(submit()),
+    )
+
+    result = agent(llm)
+
+    assert result.steps[0].thought == "Let me check. Look up E001."
+
+
+def test_error_response_is_not_confirmed_even_with_an_id(capsys):
+    receipt = {"escalation_id": "ESC-1", "status": "open"}
+
+    assert fallback(ReceiptMCP(receipt, is_error=True)).escalation_id is None

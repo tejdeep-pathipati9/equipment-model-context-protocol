@@ -145,6 +145,15 @@ BAD = [
         escalate(
             "monitor",
             "EXCEPTION_REQUEST",
+            "Your monitors are not due for a refresh, so a reviewer will look at it.",
+        ),
+        id="promises a reviewer's action",
+    ),
+    pytest.param(
+        DEAD_MONITOR,
+        escalate(
+            "monitor",
+            "EXCEPTION_REQUEST",
             "Your monitors are not due for a refresh, so a person needs to decide.",
             note="The monitor is broken and must be replaced.",
         ),

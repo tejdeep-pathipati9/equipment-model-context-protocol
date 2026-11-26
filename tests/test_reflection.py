@@ -60,6 +60,8 @@ NOT_ELIGIBLE = eligibility("not_eligible", "ROLE_NOT_ELIGIBLE", basis=None)
 MISSING_DATE_AT_MAX = eligibility("needs_review", "RECORDS_INCOMPLETE", "refresh")
 NOT_DUE = eligibility("not_eligible", "REFRESH_NOT_DUE", "refresh")
 NOT_FOUND = Step("", "get_employee_info", {}, {"error": "EMPLOYEE_NOT_FOUND"}, False)
+LOOKED_UP = Step("", "get_employee_info", {}, {"id": "E001", "role": "employee"}, False)
+INVALID_ID = Step("", "get_employee_info", {}, {"error": "INVALID_EMPLOYEE_ID"}, False)
 HEADSET = eligibility("not_eligible", "REFRESH_NOT_DUE", "refresh", item="headset")
 
 
@@ -109,7 +111,7 @@ def test_draft_has_no_escalation_id():
         pytest.param(draft(), [NOT_ELIGIBLE, eligibility()], id="last result for the item counts"),
         pytest.param(draft(), [eligibility(), HEADSET], id="a later lookup for another item"),
         pytest.param(escalation("UNKNOWN_EMPLOYEE", None), [NOT_FOUND], id="unknown employee"),
-        pytest.param(escalation("VAGUE_REQUEST", None), [], id="vague, before any lookup"),
+        pytest.param(escalation("VAGUE_REQUEST", None), [LOOKED_UP], id="vague, after a lookup"),
         pytest.param(escalation("VAGUE_REQUEST"), [MISSING_DATE_AT_MAX], id="vague before rule 3"),
         pytest.param(escalation("RECORDS_INCOMPLETE"), [MISSING_DATE_AT_MAX], id="needs_review"),
         pytest.param(escalation("CLAIM_CONTRADICTS_RECORDS"), [NOT_DUE], id="contradiction"),
@@ -188,6 +190,13 @@ def test_check_passes(proposed, steps):
             escalation("ITEM_NOT_IN_CATALOG"), [NOT_DUE], "not_eligible", id="item in catalog"
         ),
         pytest.param(escalation("AGENT_STEP_LIMIT"), [], "code", id="code-only reason"),
+        pytest.param(escalation("REFRESH_NOT_DUE"), [NOT_DUE], "not an escalation", id="deny code"),
+        pytest.param(
+            escalation("VAGUE_REQUEST", None), [], "looked up", id="vague, before rule 1 ran"
+        ),
+        pytest.param(
+            escalation("VAGUE_REQUEST", None), [INVALID_ID], "looked up", id="vague, lookup failed"
+        ),
         pytest.param(
             escalation("VAGUE_REQUEST"),
             [NOT_FOUND],
@@ -307,6 +316,11 @@ def test_review_tool_is_strict():
 
 def test_drafter_and_critic_share_the_decision_rules():
     assert all(DECISION_RULES in prompt for prompt in (SYSTEM, CRITIC))
+
+
+@pytest.mark.parametrize("prompt", [SYSTEM, CRITIC, REJECTED])
+def test_prompts_tell_a_current_state_from_a_promised_action(prompt):
+    assert "a reviewer will look at it" in prompt
 
 
 def test_critic_and_rejection_know_the_system_facts():
@@ -437,4 +451,4 @@ def test_cli_fails_when_the_escalation_was_not_recorded(unrecorded_run):
 def test_cli_says_the_escalation_was_not_recorded(unrecorded_run, capsys):
     unrecorded_run()
 
-    assert "escalation not recorded" in capsys.readouterr().err
+    assert "escalation not confirmed" in capsys.readouterr().err
