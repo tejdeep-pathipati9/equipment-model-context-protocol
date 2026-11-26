@@ -14,11 +14,12 @@ import pytest
 from anthropic.types import ToolUseBlock
 
 from equipment import tools
+from equipment.agent.checks import check_draft
 from equipment.agent.llm import FoundryClient
 from equipment.agent.mcp_client import connect
 from equipment.agent.prompts import SYSTEM
 from equipment.agent.react import run_agent
-from equipment.agent.reflection import check_draft, critique, review_draft
+from equipment.agent.reflection import critique
 from equipment.agent.trace import format_outcome, format_review, format_step
 from equipment.agent.types import Draft, Outcome, Request, Step
 from equipment.data.sqlite_repo import SqliteRepository
@@ -325,7 +326,7 @@ def run_planted(server_db, monkeypatch):
                     llm,
                     mcp,
                     request,
-                    reviewer=partial(review_draft, llm),
+                    critic=partial(critique, llm),
                     on_step=lambda s: print(format_step(next(step_numbers), s), end="\n\n"),
                     on_review=lambda r: print(format_review(next(draft_numbers), r), end="\n\n"),
                 )

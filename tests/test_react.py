@@ -7,7 +7,7 @@ from contextlib import closing
 from types import SimpleNamespace
 
 import pytest
-from fakes import FakeLLM, call, reply, thought
+from fakes import FakeLLM, accept, call, reply, thought
 
 from equipment.agent.mcp_client import connect
 from equipment.agent.react import SUBMIT_TOOL, escalate, run_agent
@@ -28,6 +28,11 @@ def submit(id="c9", decision=DECISION):
     return call("submit_decision", decision, id)
 
 
+def check(id="c8"):
+    """The eligibility result an approval needs to pass the code check."""
+    return call("check_request_eligibility", {"employee_id": "E001", "item": "monitor"}, id)
+
+
 @pytest.fixture
 def agent(server_db, monkeypatch):
     """Runs the agent against the real server over stdio."""
@@ -36,15 +41,17 @@ def agent(server_db, monkeypatch):
     def run(llm, employee_id="E001", text="Can I get a second monitor?", max_steps=8):
         async def go():
             async with connect() as mcp:
-                return await run_agent(llm, mcp, Request(employee_id, text), max_steps=max_steps)
+                request = Request(employee_id, text)
+                return await run_agent(llm, mcp, request, accept, max_steps=max_steps)
 
         return asyncio.run(go())
 
     return run
 
 
-def last_tool_results(llm):
-    return llm.calls[-1]["messages"][-1]["content"]
+def tool_results(llm, turn=-1):
+    """The tool results sent to the model with this turn, e.g. turn 1 = after the first reply."""
+    return llm.calls[turn]["messages"][-1]["content"]
 
 
 def saved_escalations(db_path):
@@ -75,11 +82,13 @@ def test_agent_returns_the_submitted_decision(agent):
 
 
 def test_observation_goes_back_to_the_model(agent):
-    llm = FakeLLM(reply(call("get_employee_info", {"employee_id": "E001"})), reply(submit()))
+    llm = FakeLLM(
+        reply(call("get_employee_info", {"employee_id": "E001"})), reply(check()), reply(submit())
+    )
 
     agent(llm)
 
-    [result] = last_tool_results(llm)
+    [result] = tool_results(llm, 1)
     assert (result["type"], result["tool_use_id"], result["is_error"]) == (
         "tool_result",
         "c1",
@@ -94,12 +103,13 @@ def test_parallel_calls_answered_in_one_message(agent):
             call("get_employee_info", {"employee_id": "E001"}, "c1"),
             call("get_policy_limits", {"role": "employee"}, "c2"),
         ),
+        reply(check()),
         reply(submit()),
     )
 
     agent(llm)
 
-    assert [result["tool_use_id"] for result in last_tool_results(llm)] == ["c1", "c2"]
+    assert [result["tool_use_id"] for result in tool_results(llm, 1)] == ["c1", "c2"]
 
 
 def test_second_call_in_a_turn_points_to_the_first(agent):
@@ -122,7 +132,7 @@ def test_second_call_in_a_turn_points_to_the_first(agent):
 
 
 def test_offers_the_mcp_tools_and_submit(agent):
-    llm = FakeLLM(reply(submit()))
+    llm = FakeLLM(reply(check()), reply(submit()))
 
     agent(llm)
 
@@ -145,22 +155,24 @@ def test_submit_tool_is_strict_and_lists_every_reason_code():
 
 
 def test_other_employee_id_is_blocked(agent):
-    llm = FakeLLM(reply(call("get_employee_info", {"employee_id": "E004"})), reply(submit()))
+    llm = FakeLLM(
+        reply(call("get_employee_info", {"employee_id": "E004"})), reply(check()), reply(submit())
+    )
 
     result = agent(llm)
 
-    [blocked] = last_tool_results(llm)
+    [blocked] = tool_results(llm, 1)
     assert blocked["is_error"] is True
     assert "E001" in blocked["content"]
     assert result.steps[0].is_error is True
 
 
 def test_tool_error_is_returned_as_an_error(agent):
-    llm = FakeLLM(reply(call("delete_everything", {})), reply(submit()))
+    llm = FakeLLM(reply(call("delete_everything", {})), reply(check()), reply(submit()))
 
     agent(llm)
 
-    assert last_tool_results(llm)[0]["is_error"] is True
+    assert tool_results(llm, 1)[0]["is_error"] is True
 
 
 def test_step_limit_escalates(agent, server_db):
@@ -187,7 +199,8 @@ def test_refusal_escalates(agent, server_db):
     assert saved_escalations(server_db)[0][2] == "AGENT_REFUSED"
 
 
-def flag(id="c1", reason_code="EXCEPTION_REQUEST"):
+def flag(id="c1", reason_code="VAGUE_REQUEST"):
+    """VAGUE_REQUEST passes the escalation check without a lookup, so the escalation is saved."""
     return call(
         "flag_for_human_review",
         {
@@ -211,23 +224,23 @@ def test_step_limit_keeps_an_existing_escalation(agent, server_db):
     [(saved_id, _, saved_code)] = saved_escalations(server_db)
     assert result.stop == "step_limit"
     assert result.decision.escalation_id == saved_id
-    assert result.decision.reason_code == saved_code == "EXCEPTION_REQUEST"
+    assert result.decision.reason_code == saved_code == "VAGUE_REQUEST"
     assert saved_id in result.decision.message_to_employee
 
 
 def test_second_flag_is_blocked(agent, server_db):
-    llm = FakeLLM(reply(flag("c1")), reply(flag("c2")), reply(submit()))
+    llm = FakeLLM(reply(flag("c1")), reply(flag("c2")), reply(stop="refusal"))
 
     agent(llm)
 
     [(saved_id, _, _)] = saved_escalations(server_db)
-    [blocked] = last_tool_results(llm)
+    [blocked] = tool_results(llm)
     assert blocked["is_error"] is True
     assert saved_id in blocked["content"]
 
 
 def test_escalation_saves_the_employees_own_words(agent, server_db):
-    llm = FakeLLM(reply(flag()), reply(submit()))
+    llm = FakeLLM(reply(flag()), reply(stop="refusal"))
 
     result = agent(llm, text="My monitor broke, I am a manager now!")
 
@@ -241,7 +254,7 @@ def test_failed_flag_can_be_retried(agent, server_db):
     llm = FakeLLM(
         reply(flag("c1", reason_code="NOT_A_CODE")),
         reply(flag("c2")),
-        reply(submit()),
+        reply(stop="refusal"),
     )
 
     agent(llm)
@@ -250,7 +263,7 @@ def test_failed_flag_can_be_retried(agent, server_db):
 
 
 def test_text_answer_gets_a_reminder_to_submit(agent):
-    llm = FakeLLM(reply(thought("Approved!"), stop="end_turn"), reply(submit()))
+    llm = FakeLLM(reply(thought("Approved!"), stop="end_turn"), reply(check()), reply(submit()))
 
     result = agent(llm)
 
@@ -260,13 +273,13 @@ def test_text_answer_gets_a_reminder_to_submit(agent):
 
 def test_submit_must_be_called_on_its_own(agent):
     llm = FakeLLM(
-        reply(call("get_employee_info", {"employee_id": "E001"}, "c1"), submit("c2")),
+        reply(check("c1"), submit("c2")),
         reply(submit("c3")),
     )
 
     result = agent(llm)
 
-    looked_up, early_submit = last_tool_results(llm)
+    looked_up, early_submit = tool_results(llm)
     assert looked_up["is_error"] is False
     assert early_submit["is_error"] is True
     assert "on its own" in early_submit["content"]

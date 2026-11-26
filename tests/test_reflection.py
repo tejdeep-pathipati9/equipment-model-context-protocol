@@ -6,6 +6,7 @@ import json
 import pytest
 from fakes import FakeLLM, call, reply, thought
 
+from equipment.agent.checks import check_draft, check_escalation
 from equipment.agent.cli import run
 from equipment.agent.prompts import (
     CATALOG,
@@ -16,9 +17,9 @@ from equipment.agent.prompts import (
     SYSTEM,
     SYSTEM_FACTS,
 )
-from equipment.agent.reflection import REVIEW_TOOL, check_draft, critique, review_draft
+from equipment.agent.reflection import REVIEW_TOOL, critique
 from equipment.agent.trace import format_outcome, format_review
-from equipment.agent.types import AgentResult, Draft, Request, Review, Step, Stop
+from equipment.agent.types import AgentResult, Draft, Proposal, Request, Review, Step, Stop
 from equipment.domain.models import Item
 
 
@@ -196,6 +197,56 @@ def test_check_reports_every_problem():
     assert len(check_draft(proposed, [eligibility()])) == 2
 
 
+# ---------------------------------------------------------------- code check of an escalation
+
+NOT_FOUND = Step("", "get_employee_info", {}, {"error": "EMPLOYEE_NOT_FOUND"}, False)
+NOT_DUE = eligibility("not_eligible", "REFRESH_NOT_DUE", "refresh")
+
+
+def proposal(reason_code):
+    return Proposal(reason_code=reason_code, reason="Needs a human.")
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "steps"),
+    [
+        pytest.param("UNKNOWN_EMPLOYEE", [NOT_FOUND], id="unknown employee"),
+        pytest.param("VAGUE_REQUEST", [], id="vague, before any lookup"),
+        pytest.param("VAGUE_REQUEST", [MISSING_DATE_AT_MAX], id="vague comes before needs_review"),
+        pytest.param("RECORDS_INCOMPLETE", [MISSING_DATE_AT_MAX], id="needs_review code"),
+        pytest.param("CLAIM_CONTRADICTS_RECORDS", [NOT_DUE], id="contradiction"),
+        pytest.param("EXCEPTION_REQUEST", [NOT_DUE], id="exception, not due"),
+        pytest.param("EXCEPTION_REQUEST", [NOT_ELIGIBLE], id="exception, role not eligible"),
+    ],
+)
+def test_escalation_check_passes(reason_code, steps):
+    assert check_escalation(proposal(reason_code), steps) == []
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "steps", "problem"),
+    [
+        pytest.param("EXCEPTION_REQUEST", [eligibility()], "approve", id="policy allows it"),
+        pytest.param("EXCEPTION_REQUEST", [], "no eligibility", id="exception without a check"),
+        pytest.param(
+            "UNKNOWN_EMPLOYEE", [eligibility()], "EMPLOYEE_NOT_FOUND", id="known employee"
+        ),
+        pytest.param(
+            "CLAIM_CONTRADICTS_RECORDS",
+            [MISSING_DATE_AT_MAX],
+            "RECORDS_INCOMPLETE",
+            id="needs_review comes first",
+        ),
+        pytest.param("ITEM_NOT_IN_CATALOG", [NOT_DUE], "not_eligible", id="item is in the catalog"),
+        pytest.param("AGENT_STEP_LIMIT", [], "code", id="code-only reason"),
+    ],
+)
+def test_escalation_check_finds_the_problem(reason_code, steps, problem):
+    [issue] = check_escalation(proposal(reason_code), steps)
+
+    assert problem in issue
+
+
 # ---------------------------------------------------------------- critic
 
 REQUEST = Request("E001", "Can I get a second monitor by Friday?")
@@ -289,34 +340,8 @@ def test_catalog_matches_the_domain():
 # ---------------------------------------------------------------- the review
 
 
-def run_review(llm, proposed, steps):
-    return asyncio.run(review_draft(llm, REQUEST, proposed, steps))
-
-
-def test_review_runs_both_checks():
-    current = run_review(FakeLLM(review(BY_FRIDAY)), draft(), [eligibility()])
-
-    assert current.draft == as_json(draft())
-    assert (current.code_issues, len(current.critic_issues)) == ([], 1)
-    assert current.passed is False
-
-
-def test_review_passes_a_clean_draft():
-    assert run_review(FakeLLM(review()), draft(), [eligibility()]).passed is True
-
-
-def test_failed_code_check_skips_the_critic():
-    llm = FakeLLM()
-
-    current = run_review(llm, draft(), [NOT_ELIGIBLE])
-
-    assert current.draft == as_json(draft())
-    assert current.critic_issues is None
-    assert llm.calls == []
-
-
 def test_no_verdict_is_an_issue():
-    current = run_review(FakeLLM(reply(stop="refusal")), draft(), [eligibility()])
+    current = Review(as_json(draft()), [], None)
 
     assert (current.passed, current.no_verdict) == (False, True)
     assert "no verdict" in current.issues[0]
@@ -339,6 +364,34 @@ def test_format_review_shows_the_draft_and_the_critic_issues():
         "  Critic:      1 issue\n"
         '    - "by Friday": No tool result mentions a date.'
     )
+
+
+def test_critic_judges_a_proposed_escalation_instead_of_a_draft():
+    llm = FakeLLM(review())
+
+    run_critique(llm, proposed=proposal("VAGUE_REQUEST"))
+
+    [message] = llm.calls[0]["messages"]
+    assert json.loads(message["content"])["proposed_escalation"] == {
+        "reason_code": "VAGUE_REQUEST",
+        "reason": "Needs a human.",
+    }
+
+
+def test_critic_prompt_explains_a_proposed_escalation():
+    assert "proposed_escalation" in CRITIC
+
+
+def test_format_review_shows_a_proposed_escalation():
+    current = Review(
+        {"decision": "escalate", "reason_code": "VAGUE_REQUEST", "reason": "Two items."}, []
+    )
+
+    assert format_review(2, current).splitlines()[:3] == [
+        "Reflection: draft 2 (proposed escalation)",
+        "  Decision:    ESCALATE (VAGUE_REQUEST)",
+        "  Reason:      Two items.",
+    ]
 
 
 @pytest.mark.parametrize(

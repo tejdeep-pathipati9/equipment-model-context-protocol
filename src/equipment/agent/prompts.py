@@ -63,7 +63,8 @@ as the employee wrote it.
 
 {DECISION_RULES}
 
-To escalate, call flag_for_human_review once, then submit its escalation_id.
+To escalate, call flag_for_human_review once, then submit its escalation_id. An escalation is \
+reviewed before it is saved; if it is not saved, fix the issues or decide without escalating.
 
 The message to the employee explains the decision using the tool results. For basis refresh, say \
 the new unit replaces their oldest one; for basis quantity, do not say anything is replaced.
@@ -83,12 +84,20 @@ Report an issue when:
 Quote the exact words that are wrong and say why in one sentence. Do not report style, tone, \
 length or missing detail. Call submit_review once; an empty list means the draft is correct.
 
+You may get a "proposed_escalation" instead of a "draft": an escalation the drafter wants to save. \
+Check only whether escalating with that reason code follows the decision rules; its reason is a \
+note for the human reviewer, not a message to the employee.
+
 {DECISION_RULES}
 
 {SYSTEM_FACTS}
 
 {MESSAGE_RULES}
 """
+
+NOT_ESCALATED = """\
+The escalation was not saved. Fix every issue: escalate with the right reason code, or decide \
+without escalating. Look up anything that is missing first."""
 
 REJECTED = f"""\
 The draft was not accepted. Fix every issue and keep the rest of it.

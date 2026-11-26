@@ -16,6 +16,7 @@ MODULES = [
     "equipment.domain.policy",
     "equipment.data.sqlite_repo",
     "equipment.data.seed",
+    "equipment.agent.checks",
     "equipment.agent.cli",
     "equipment.agent.llm",
     "equipment.agent.mcp_client",

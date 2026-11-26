@@ -183,9 +183,14 @@ Before a response is final, the agent **reflects** on its draft:
   ID is present);
 - a separate LLM critic checks every claim in the draft against the tool observations.
 
-A draft that fails goes back to the agent with its issues, so the agent can reword it or look up a
-missing fact with the tools. A draft that still fails after 2 revisions is escalated instead
-(`REFLECTION_FAILED`). If the request was already escalated, its saved escalation ID and reason
+An escalation is reviewed the same way **before it is saved**: a code check confirms the reason
+code fits the tool results in rule order (e.g. `EXCEPTION_REQUEST` is rejected when policy allows one
+more unit), then the critic checks it against the decision rules. Only an accepted escalation calls
+`flag_for_human_review`, so a wrong one is never saved.
+
+A draft or escalation that fails goes back to the agent with its issues, so the agent can reword it
+or look up a missing fact with the tools. After 2 rejections, the next one escalates the request
+instead (`REFLECTION_FAILED`). If the request was already escalated, its saved escalation ID and reason
 code are kept. If the agent exceeds 8 reasoning steps, the request is escalated
 (`AGENT_STEP_LIMIT`). If the model declines to answer, it is escalated (`AGENT_REFUSED`).
 

@@ -26,6 +26,13 @@ class Draft(ModelOutput):
     escalation_id: str | None
 
 
+class Proposal(ModelOutput):
+    """An escalation the model asked to save; reviewed before flag_for_human_review runs."""
+
+    reason_code: ReasonCode
+    reason: str = Field(min_length=1)
+
+
 class CriticIssue(ModelOutput):
     quote: str = Field(description="exact words from the draft")
     problem: str
@@ -81,7 +88,8 @@ class Review:
         return self.code_issues or self.critic_issues or []
 
 
-Reviewer = Callable[[Request, Draft, list[Step]], Awaitable[Review]]
+Critic = Callable[[Request, Draft | Proposal, list[Step]], Awaitable[list[str] | None]]
+"""The critic's issues with a draft or a proposed escalation: empty = pass, None = no verdict."""
 
 
 class Stop(StrEnum):

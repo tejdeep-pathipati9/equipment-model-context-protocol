@@ -26,10 +26,13 @@ def format_review(number: int, review: Review) -> str:
         critic = "no verdict"
     else:
         critic = _result(review.issues)
+    proposed = "reason" in draft  # a proposed escalation, reviewed before it is saved
     lines = [
-        f"Reflection: draft {number}",
+        f"Reflection: draft {number}" + (" (proposed escalation)" if proposed else ""),
         f"  Decision:    {str(draft.get('decision', '-')).upper()} ({draft.get('reason_code')})",
-        f"  Message:     {draft.get('message_to_employee', '-')}",
+        f"  Reason:      {draft['reason']}"
+        if proposed
+        else f"  Message:     {draft.get('message_to_employee', '-')}",
         f"  Code check:  {_result(review.code_issues)}",
         f"  Critic:      {critic}",
         *(f"    - {issue}" for issue in review.issues),

@@ -1,8 +1,9 @@
 """The ReAct loop: the model thinks, calls MCP tools, reads the results, and submits a decision.
 
-A reviewer may reject a submitted draft; the issues go back to the model as an observation, so it
-can reword the draft or look up what is missing. Safe fallbacks (step limit, refusal, no draft
-passing review) are escalated by code, never left to the model.
+Each submitted draft, and each escalation before it is saved, goes through the code check, then the
+critic. Rejected issues go back to the model as an observation, so it can reword the draft or look
+up what is missing. Safe fallbacks (step limit, refusal, no draft passing review) are escalated by
+code, never left to the model.
 """
 
 import json
@@ -14,20 +15,22 @@ from anthropic.types import MessageParam, ToolParam, ToolResultBlockParam
 from mcp import Client
 from pydantic import ValidationError
 
+from equipment.agent.checks import FLAG, check_draft, check_escalation, saved_escalation
 from equipment.agent.llm import LLMClient
 from equipment.agent.mcp_client import anthropic_tools, result_payload
-from equipment.agent.prompts import REJECTED, SYSTEM
+from equipment.agent.prompts import NOT_ESCALATED, REJECTED, SYSTEM
 from equipment.agent.types import (
     AgentResult,
+    Critic,
     Draft,
+    Proposal,
     Request,
     Review,
-    Reviewer,
     Step,
     Stop,
     validation_issues,
 )
-from equipment.domain.models import Decision, ReasonCode
+from equipment.domain.models import ESCALATION_CODES, Decision, ReasonCode
 
 SUBMIT = "submit_decision"
 SUBMIT_TOOL: ToolParam = {
@@ -36,7 +39,6 @@ SUBMIT_TOOL: ToolParam = {
     "strict": True,
     "input_schema": transform_schema(Draft),
 }
-FLAG = "flag_for_human_review"
 REMINDER = f"Call {SUBMIT} with your final decision."
 
 
@@ -44,22 +46,26 @@ async def run_agent(
     llm: LLMClient,
     mcp: Client,
     request: Request,
-    reviewer: Reviewer | None = None,
+    critic: Critic,
     max_steps: int = 8,
     max_revisions: int = 2,
     on_step: Callable[[Step], None] = lambda step: None,
     on_review: Callable[[Review], None] = lambda review: None,
 ) -> AgentResult:
-    """One model turn per step; e.g. E001 "second monitor?" -> approve, WITHIN_LIMIT.
-
-    Without a reviewer the first draft is final.
-    """
+    """One model turn per step; e.g. E001 "second monitor?" -> approve, WITHIN_LIMIT."""
     steps: list[Step] = []
     reviews: list[Review] = []
 
     def record(step: Step) -> None:
         steps.append(step)
         on_step(step)
+
+    def keep(review: Review) -> bool:
+        """Keep a review; True when the run must stop (no verdict, or too many rejections)."""
+        reviews.append(review)
+        on_review(review)
+        rejections = sum(bool(kept.issues) for kept in reviews)
+        return bool(review.issues) and (review.no_verdict or rejections > max_revisions)
 
     async def give_up(stop: Stop, reason_code: ReasonCode, reason: str) -> AgentResult:
         decision = await escalate(mcp, request, reason_code, reason, steps, record)
@@ -87,22 +93,19 @@ async def run_agent(
             [(thought, call)] = calls
             submitted = dict(call.input)
             draft, review = _parse(submitted)
-            if draft and reviewer:
-                review = await reviewer(request, draft, steps)
-            issues = review.issues if review else []
+            if draft:
+                review = await _review(critic, request, draft, steps)
+            issues = review.issues
             outcome = {"accepted": False, "issues": issues} if issues else {"accepted": True}
             record(Step(thought, SUBMIT, submitted, outcome, bool(issues)))
-            if review:
-                reviews.append(review)
-                on_review(review)
-            if draft and not issues:
-                return AgentResult(draft, Stop.SUBMITTED, steps, reviews)
-            if reviews[-1].no_verdict or len(reviews) > max_revisions:
+            if keep(review):
                 return await give_up(
                     Stop.REFLECTION_FAILED,
                     ReasonCode.REFLECTION_FAILED,
                     f"The draft did not pass review: {'; '.join(issues)}",
                 )
+            if draft and not issues:
+                return AgentResult(draft, Stop.SUBMITTED, steps, reviews)
             messages.append({"role": "user", "content": [_rejected(call.id, outcome)]})
             continue
 
@@ -112,8 +115,22 @@ async def run_agent(
             if index and not thought:
                 thought = f"(same turn as step {first_step})"
             arguments = _arguments(request, call)
+            review = await _review_escalation(critic, request, call.name, arguments, steps)
+            if review and review.issues:
+                observation = {"accepted": False, "issues": review.issues}
+                record(Step(thought, call.name, arguments, observation, True))
+                if keep(review):
+                    return await give_up(
+                        Stop.REFLECTION_FAILED,
+                        ReasonCode.REFLECTION_FAILED,
+                        f"The escalation did not pass review: {'; '.join(review.issues)}",
+                    )
+                results.append(_rejected(call.id, observation, NOT_ESCALATED))
+                continue
             observation, is_error = await _run_tool(mcp, request, call.name, arguments, steps)
             record(Step(thought, call.name, arguments, observation, is_error))
+            if review:
+                keep(review)
             results.append(
                 {
                     "type": "tool_result",
@@ -131,22 +148,57 @@ async def run_agent(
     )
 
 
-def _parse(submitted: dict[str, Any]) -> tuple[Draft | None, Review | None]:
+def _parse(submitted: dict[str, Any]) -> tuple[Draft | None, Review]:
     """A valid draft, or a review that rejects it, e.g. for decision "maybe"."""
     try:
-        return Draft.model_validate(submitted), None
+        return Draft.model_validate(submitted), Review(submitted, [])
     except ValidationError as error:
         return None, Review(submitted, validation_issues(error))
 
 
-def _rejected(tool_use_id: str, rejection: dict[str, Any]) -> ToolResultBlockParam:
+async def _review(critic: Critic, request: Request, draft: Draft, steps: list[Step]) -> Review:
+    """The code check, then the critic only if it passes."""
+    submitted = draft.model_dump(mode="json")
+    code_issues = check_draft(draft, steps)
+    if code_issues:
+        return Review(submitted, code_issues)
+    return Review(submitted, [], await critic(request, draft, steps))
+
+
+async def _review_escalation(
+    critic: Critic, request: Request, name: str, arguments: dict[str, Any], steps: list[Step]
+) -> Review | None:
+    """Review an escalation before it is saved; None when the call is not one to review.
+
+    A blocked call or invalid arguments are left to _run_tool and the tool, which save nothing.
+    """
+    if name != FLAG or _blocked(request, name, arguments, steps):
+        return None
+    try:
+        proposal = Proposal.model_validate(
+            {"reason_code": arguments.get("reason_code"), "reason": arguments.get("reason")}
+        )
+    except ValidationError:
+        return None
+    if proposal.reason_code not in ESCALATION_CODES:
+        return None
+    proposed = {"decision": Decision.ESCALATE.value, **proposal.model_dump(mode="json")}
+    code_issues = check_escalation(proposal, steps)
+    if code_issues:
+        return Review(proposed, code_issues)
+    return Review(proposed, [], await critic(request, proposal, steps))
+
+
+def _rejected(
+    tool_use_id: str, rejection: dict[str, Any], rules: str = REJECTED
+) -> ToolResultBlockParam:
     """The issues, and how to fix them."""
     return {
         "type": "tool_result",
         "tool_use_id": tool_use_id,
         "content": [
             {"type": "text", "text": json.dumps(rejection)},
-            {"type": "text", "text": REJECTED},
+            {"type": "text", "text": rules},
         ],
         "is_error": True,
     }
@@ -176,26 +228,25 @@ def _arguments(request: Request, call: Any) -> dict[str, Any]:
 async def _run_tool(
     mcp: Client, request: Request, name: str, arguments: dict[str, Any], steps: list[Step]
 ) -> tuple[Any, bool]:
-    if name == SUBMIT:
-        return {"error": f"Call {SUBMIT} on its own, after you have read the other results."}, True
-    employee_id = arguments.get("employee_id")
-    if employee_id is not None and str(employee_id).strip() != request.employee_id:
-        return {"error": f"Use the employee ID from the request: {request.employee_id}."}, True
-    flagged = saved_escalation(steps)
-    if name == FLAG and flagged:
-        existing = flagged.observation["escalation_id"]
-        return {"error": f"Already escalated as {existing}; submit that escalation_id."}, True
+    blocked = _blocked(request, name, arguments, steps)
+    if blocked:
+        return {"error": blocked}, True
     result = await mcp.call_tool(name, arguments)
     return result_payload(result), bool(result.is_error)
 
 
-def saved_escalation(steps: list[Step]) -> Step | None:
-    """The step that saved an escalation in this run, e.g. ESC-3f9a1c2e, or None."""
-    for step in steps:
-        saved = isinstance(step.observation, dict) and step.observation.get("escalation_id")
-        if step.action == FLAG and saved:
-            return step
-    return None
+def _blocked(request: Request, name: str, arguments: dict[str, Any], steps: list[Step]) -> str:
+    """Why code refuses this call before it reaches the server, or "" if it may run."""
+    if name == SUBMIT:
+        return f"Call {SUBMIT} on its own, after you have read the other results."
+    employee_id = arguments.get("employee_id")
+    if employee_id is not None and str(employee_id).strip() != request.employee_id:
+        return f"Use the employee ID from the request: {request.employee_id}."
+    flagged = saved_escalation(steps)
+    if name == FLAG and flagged:
+        existing = flagged.observation["escalation_id"]
+        return f"Already escalated as {existing}; submit that escalation_id."
+    return ""
 
 
 async def escalate(

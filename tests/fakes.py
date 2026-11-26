@@ -15,6 +15,11 @@ class FakeLLM:
         return self.replies.pop(0)
 
 
+async def accept(request, draft, steps):
+    """A critic that finds no issues, so only the code check can reject a draft."""
+    return []
+
+
 def reply(*blocks, stop="tool_use"):
     return SimpleNamespace(stop_reason=stop, content=list(blocks))
 

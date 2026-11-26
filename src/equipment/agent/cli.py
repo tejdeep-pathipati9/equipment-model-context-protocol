@@ -13,7 +13,7 @@ import anthropic
 from equipment.agent.llm import FoundryClient
 from equipment.agent.mcp_client import ServerUnavailable, connect
 from equipment.agent.react import run_agent
-from equipment.agent.reflection import review_draft
+from equipment.agent.reflection import critique
 from equipment.agent.trace import format_decision, format_outcome, format_review, format_step
 from equipment.agent.types import Request, Review, Step
 
@@ -59,7 +59,7 @@ async def run(request: Request) -> int:
                 llm,
                 mcp,
                 request,
-                reviewer=partial(review_draft, llm),
+                critic=partial(critique, llm),
                 on_step=show_step,
                 on_review=show_review,
             )
