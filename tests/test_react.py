@@ -12,7 +12,7 @@ from fakes import FakeLLM, accept, call, reply, thought
 from equipment.agent.mcp_client import connect
 from equipment.agent.react import SUBMIT_TOOL, escalate, run_agent
 from equipment.agent.trace import format_decision, format_step
-from equipment.agent.types import Draft, Request, Step
+from equipment.agent.types import AgentResult, Draft, Request, Step, Stop
 from equipment.domain.models import ReasonCode
 
 DECISION = {
@@ -308,6 +308,35 @@ def test_format_decision():
 
     assert "Decision:    ESCALATE (WITHIN_LIMIT)" in text
     assert "Escalation:  ESC-1" in text
+
+
+UNRECORDED = Draft(
+    decision="escalate",
+    reason_code="AGENT_STEP_LIMIT",
+    item=None,
+    message_to_employee="Your request could not be decided or recorded. Please submit it again.",
+    escalation_id=None,
+)
+
+
+@pytest.mark.parametrize(
+    ("decision", "recorded"),
+    [
+        pytest.param(UNRECORDED, False, id="escalation without an ID"),
+        pytest.param(
+            Draft(**DECISION | {"decision": "escalate", "escalation_id": "ESC-1"}),
+            True,
+            id="saved escalation",
+        ),
+        pytest.param(Draft(**DECISION), True, id="approval"),
+    ],
+)
+def test_result_is_recorded_unless_an_escalation_has_no_id(decision, recorded):
+    assert AgentResult(decision, Stop.STEP_LIMIT).recorded is recorded
+
+
+def test_format_decision_says_when_an_escalation_was_not_recorded():
+    assert "Escalation:  NOT RECORDED" in format_decision(UNRECORDED)
 
 
 def test_escalation_survives_a_plain_text_tool_result():

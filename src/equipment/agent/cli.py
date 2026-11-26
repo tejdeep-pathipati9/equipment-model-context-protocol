@@ -71,6 +71,9 @@ async def run(request: Request) -> int:
             return 1
     print(format_outcome(result))
     print(format_decision(result.decision))
+    if not result.recorded:
+        print("escalation not recorded: the request must be submitted again", file=sys.stderr)
+        return 1
     return 0
 
 

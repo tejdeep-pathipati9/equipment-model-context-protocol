@@ -3,6 +3,7 @@
 import json
 
 from equipment.agent.types import AgentResult, Draft, Outcome, Review, Step
+from equipment.domain.models import Decision
 
 
 def format_step(number: int, step: Step) -> str:
@@ -65,8 +66,14 @@ def format_decision(decision: Draft) -> str:
         rule,
         f"Decision:    {decision.decision.upper()} ({decision.reason_code})",
         f"Item:        {decision.item or '-'}",
-        f"Escalation:  {decision.escalation_id or '-'}",
+        f"Escalation:  {_escalation(decision)}",
         f"Message:     {decision.message_to_employee}",
         rule,
     ]
     return "\n".join(lines)
+
+
+def _escalation(decision: Draft) -> str:
+    if decision.escalation_id:
+        return decision.escalation_id
+    return "NOT RECORDED" if decision.decision == Decision.ESCALATE else "-"

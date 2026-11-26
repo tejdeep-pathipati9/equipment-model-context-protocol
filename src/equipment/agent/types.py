@@ -128,6 +128,12 @@ class AgentResult:
     reviews: list[Review] = field(default_factory=list)
 
     @property
+    def recorded(self) -> bool:
+        """False for an escalation that could not be saved: no human will ever see it."""
+        decision = self.decision
+        return decision.decision != Decision.ESCALATE or decision.escalation_id is not None
+
+    @property
     def outcome(self) -> Outcome:
         if not self.reviews:
             return Outcome.SKIPPED

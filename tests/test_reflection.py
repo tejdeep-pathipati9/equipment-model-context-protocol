@@ -445,3 +445,27 @@ def test_cli_prints_the_reflected_decision(server_db, monkeypatch, capsys):
     assert "Reflection: draft 1" in output and "Reflection: draft 2" in output
     assert GOOD.message_to_employee in final
     assert BAD.message_to_employee not in final
+
+
+@pytest.fixture
+def unrecorded_run(server_db, monkeypatch):
+    """The CLI, with an agent whose escalation could not be saved."""
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    monkeypatch.setattr("equipment.agent.cli.FoundryClient.from_env", FakeLLM)
+    unrecorded = draft(decision="escalate", reason_code="AGENT_STEP_LIMIT", item=None)
+
+    async def agent(*args, **kwargs):
+        return AgentResult(unrecorded, Stop.STEP_LIMIT)
+
+    monkeypatch.setattr("equipment.agent.cli.run_agent", agent)
+    return lambda: asyncio.run(run(REQUEST))
+
+
+def test_cli_fails_when_the_escalation_was_not_recorded(unrecorded_run):
+    assert unrecorded_run() == 1
+
+
+def test_cli_says_the_escalation_was_not_recorded(unrecorded_run, capsys):
+    unrecorded_run()
+
+    assert "escalation not recorded" in capsys.readouterr().err
