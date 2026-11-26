@@ -62,6 +62,7 @@ def flagged(id="ESC-1", reason_code="EXCEPTION_REQUEST"):
 
 
 NOT_ELIGIBLE = eligibility("not_eligible", "ROLE_NOT_ELIGIBLE", basis=None)
+MISSING_DATE_AT_MAX = eligibility("needs_review", "RECORDS_INCOMPLETE", "refresh")
 
 
 @pytest.mark.parametrize(
@@ -135,6 +136,18 @@ def test_check_passes(proposed, steps):
             [eligibility("needs_review", "RECORDS_INCOMPLETE", None)],
             "needs_review",
             id="deny needs_review",
+        ),
+        pytest.param(
+            draft(decision="deny", reason_code="AT_MAX_QUANTITY"),
+            [MISSING_DATE_AT_MAX],
+            "needs_review",
+            id="at max, but needs_review",
+        ),
+        pytest.param(
+            draft(reason_code="RECORDS_INCOMPLETE"),
+            [MISSING_DATE_AT_MAX],
+            "needs_review",
+            id="approve needs_review on basis refresh",
         ),
         pytest.param(draft(), [eligibility(), flagged()], "ESC-1", id="approve after escalating"),
         pytest.param(

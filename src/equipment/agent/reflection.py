@@ -58,6 +58,8 @@ def _check_verdict(draft: Draft, steps: list[Step]) -> list[str]:
     result = _last_eligibility(steps)
     if result is None:
         return [f"{decision}, but there is no eligibility result"]
+    if result["status"] == Status.NEEDS_REVIEW:  # requirements 4, rule 3 comes before rule 6
+        return [f"{decision}, but eligibility is needs_review ({result['reason_code']}): escalate"]
 
     issues = []
     if draft.escalation_id is not None:
