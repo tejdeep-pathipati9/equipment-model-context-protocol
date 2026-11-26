@@ -10,11 +10,15 @@ def format_step(number: int, step: Step) -> str:
     observation = json.dumps(step.observation)
     if step.is_error:
         observation = f"ERROR {observation}"
-    actor = "  Actor:       code\n" if step.actor == "code" else ""
+    explanation = f"  Thought:     {step.thought or '(none)'}\n"
+    if step.actor == "code":
+        explanation = f"  Actor:       code\n  Reason:      {step.thought or '(none)'}\n"
+    elif step.same_turn_as:
+        together = f"same as step {step.same_turn_as} (tools requested together)"
+        explanation = f"  Model turn:  {together}\n"
     return (
         f"Step {number}\n"
-        f"{actor}"
-        f"  Thought:     {step.thought or '(none)'}\n"
+        f"{explanation}"
         f"  Action:      {step.action}({json.dumps(step.arguments)})\n"
         f"  Observation: {observation}"
     )

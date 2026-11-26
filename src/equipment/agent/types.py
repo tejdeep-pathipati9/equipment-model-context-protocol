@@ -135,6 +135,7 @@ class Step:
     observation: Any
     is_error: bool
     actor: str = "agent"  # "code" for an action the model did not choose, e.g. saving
+    same_turn_as: int | None = None  # the step whose model turn also requested this one
 
 
 @dataclass(frozen=True)

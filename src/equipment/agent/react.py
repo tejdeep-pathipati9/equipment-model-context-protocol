@@ -133,11 +133,11 @@ async def run_agent(
         results: list[ToolResultBlockParam] = []
         first_step = len(steps) + 1
         for index, (thought, call) in enumerate(calls):
-            if index and not thought:
-                thought = f"(same turn as step {first_step})"
+            # A later call in the same reply usually has no thought of its own.
+            shared = first_step if index and not thought else None
             arguments = dict(call.input)
             observation, is_error = await _run_tool(mcp, request, call.name, arguments)
-            record(Step(thought, call.name, arguments, observation, is_error))
+            record(Step(thought, call.name, arguments, observation, is_error, same_turn_as=shared))
             results.append(
                 {
                     "type": "tool_result",

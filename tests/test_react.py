@@ -151,11 +151,7 @@ def test_second_call_in_a_turn_points_to_the_first(agent):
 
     result = agent(llm)
 
-    assert [step.thought for step in result.steps] == [
-        "Look up E001.",
-        "(same turn as step 1)",
-        "Within limit.",
-    ]
+    assert [step.same_turn_as for step in result.steps] == [None, 1, None]
 
 
 def test_offers_only_the_lookup_tools_and_submit(agent):
@@ -295,10 +291,27 @@ def test_format_step():
     )
 
 
+def test_format_step_shows_a_shared_model_turn():
+    step = Step("", "check_request_eligibility", {}, {}, False, same_turn_as=1)
+
+    assert format_step(2, step) == (
+        "Step 2\n"
+        "  Model turn:  same as step 1 (tools requested together)\n"
+        "  Action:      check_request_eligibility({})\n"
+        "  Observation: {}"
+    )
+
+
 def test_format_step_names_code_as_the_actor():
     step = Step("Save it.", "flag_for_human_review", {}, {"escalation_id": "ESC-1"}, False, "code")
 
-    assert format_step(1, step).splitlines()[1] == "  Actor:       code"
+    assert format_step(1, step) == (
+        "Step 1\n"
+        "  Actor:       code\n"
+        "  Reason:      Save it.\n"
+        "  Action:      flag_for_human_review({})\n"
+        '  Observation: {"escalation_id": "ESC-1"}'
+    )
 
 
 SAVED = FinalDecision(
