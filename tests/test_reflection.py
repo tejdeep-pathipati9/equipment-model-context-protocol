@@ -5,7 +5,9 @@ import json
 
 import pytest
 from fakes import FakeLLM, call, reply, thought
+from pydantic import ValidationError
 
+from equipment.agent.checks import check_draft
 from equipment.agent.cli import run
 from equipment.agent.prompts import (
     CATALOG,
@@ -16,9 +18,9 @@ from equipment.agent.prompts import (
     SYSTEM,
     SYSTEM_FACTS,
 )
-from equipment.agent.reflection import REVIEW_TOOL, check_draft, critique, review_draft
+from equipment.agent.reflection import REVIEW_TOOL, critique
 from equipment.agent.trace import format_outcome, format_review
-from equipment.agent.types import AgentResult, Draft, Request, Review, Step, Stop
+from equipment.agent.types import AgentResult, Draft, FinalDecision, Request, Review, Step, Stop
 from equipment.domain.models import Item
 
 
@@ -29,7 +31,7 @@ def draft(**changes):
             "reason_code": "WITHIN_LIMIT",
             "item": "monitor",
             "message_to_employee": "Approved: one more monitor.",
-            "escalation_id": None,
+            "escalation_reason": None,
         }
         | changes
     )
@@ -39,15 +41,13 @@ def as_json(proposed):
     return proposed.model_dump(mode="json")
 
 
-def escalation(**changes):
+def escalation(reason_code="EXCEPTION_REQUEST", item="monitor"):
     return draft(
-        **{
-            "decision": "escalate",
-            "reason_code": "EXCEPTION_REQUEST",
-            "message_to_employee": "A human reviewer will look at this (ESC-1).",
-            "escalation_id": "ESC-1",
-        }
-        | changes
+        decision="escalate",
+        reason_code=reason_code,
+        item=item,
+        message_to_employee="Your monitor is not due for a refresh, so a person needs to decide.",
+        escalation_reason="Employee says the monitor broke.",
     )
 
 
@@ -56,12 +56,35 @@ def eligibility(status="eligible", reason_code="WITHIN_LIMIT", basis="quantity",
     return Step("", "check_request_eligibility", {"item": item}, observation, False)
 
 
-def flagged(id="ESC-1", reason_code="EXCEPTION_REQUEST"):
-    observation = {"escalation_id": id, "status": "open"}
-    return Step("", "flag_for_human_review", {"reason_code": reason_code}, observation, False)
-
-
 NOT_ELIGIBLE = eligibility("not_eligible", "ROLE_NOT_ELIGIBLE", basis=None)
+MISSING_DATE_AT_MAX = eligibility("needs_review", "RECORDS_INCOMPLETE", "refresh")
+NOT_DUE = eligibility("not_eligible", "REFRESH_NOT_DUE", "refresh")
+NOT_FOUND = Step("", "get_employee_info", {}, {"error": "EMPLOYEE_NOT_FOUND"}, False)
+HEADSET = eligibility("not_eligible", "REFRESH_NOT_DUE", "refresh", item="headset")
+
+
+# ---------------------------------------------------------------- the draft
+
+
+@pytest.mark.parametrize(
+    ("changes", "problem"),
+    [
+        pytest.param(
+            {"decision": "escalate"}, "needs an escalation_reason", id="escalate, no note"
+        ),
+        pytest.param({"escalation_reason": "x"}, "must not have", id="approve with a note"),
+    ],
+)
+def test_escalation_reason_only_comes_with_an_escalation(changes, problem):
+    with pytest.raises(ValidationError, match=problem):
+        draft(**changes)
+
+
+def test_draft_has_no_escalation_id():
+    assert "escalation_id" not in Draft.model_fields
+
+
+# ---------------------------------------------------------------- code check
 
 
 @pytest.mark.parametrize(
@@ -80,16 +103,19 @@ NOT_ELIGIBLE = eligibility("not_eligible", "ROLE_NOT_ELIGIBLE", basis=None)
         ),
         pytest.param(
             draft(decision="deny", reason_code="AT_MAX_QUANTITY"),
-            [eligibility("not_eligible", "REFRESH_NOT_DUE", "refresh")],
+            [NOT_DUE],
             id="deny extra unit at max, refresh not due",
         ),
-        pytest.param(escalation(), [eligibility(), flagged()], id="escalate with saved record"),
-        pytest.param(escalation(item=None), [flagged()], id="escalate without eligibility"),
-        pytest.param(
-            draft(),
-            [NOT_ELIGIBLE, eligibility()],
-            id="last eligibility result counts",
-        ),
+        pytest.param(draft(), [NOT_ELIGIBLE, eligibility()], id="last result for the item counts"),
+        pytest.param(draft(), [eligibility(), HEADSET], id="a later lookup for another item"),
+        pytest.param(escalation("UNKNOWN_EMPLOYEE", None), [NOT_FOUND], id="unknown employee"),
+        pytest.param(escalation("VAGUE_REQUEST", None), [], id="vague, before any lookup"),
+        pytest.param(escalation("VAGUE_REQUEST"), [MISSING_DATE_AT_MAX], id="vague before rule 3"),
+        pytest.param(escalation("RECORDS_INCOMPLETE"), [MISSING_DATE_AT_MAX], id="needs_review"),
+        pytest.param(escalation("CLAIM_CONTRADICTS_RECORDS"), [NOT_DUE], id="contradiction"),
+        pytest.param(escalation(), [NOT_DUE], id="exception, not due"),
+        pytest.param(escalation(), [NOT_ELIGIBLE], id="exception, role not eligible"),
+        pytest.param(escalation(), [NOT_DUE, HEADSET], id="exception, then another item"),
     ],
 )
 def test_check_passes(proposed, steps):
@@ -104,11 +130,9 @@ def test_check_passes(proposed, steps):
         pytest.param(
             draft(reason_code="REFRESH_DUE"), [eligibility()], "WITHIN_LIMIT", id="wrong code"
         ),
-        pytest.param(draft(item="laptop"), [eligibility()], "monitor", id="wrong item"),
-        pytest.param(
-            draft(escalation_id="ESC-9"), [eligibility()], "ESC-9", id="invented escalation"
-        ),
-        pytest.param(draft(item=None), [eligibility()], "monitor", id="no item"),
+        pytest.param(draft(item="laptop"), [eligibility()], "for laptop", id="other item checked"),
+        pytest.param(draft(), [HEADSET], "for monitor", id="only another item checked"),
+        pytest.param(draft(item=None), [eligibility()], "for the item", id="no item"),
         pytest.param(
             draft(decision="deny"), [eligibility()], "eligible", id="deny an eligible request"
         ),
@@ -136,37 +160,46 @@ def test_check_passes(proposed, steps):
             "needs_review",
             id="deny needs_review",
         ),
-        pytest.param(draft(), [eligibility(), flagged()], "ESC-1", id="approve after escalating"),
         pytest.param(
-            draft(decision="deny", reason_code="ROLE_NOT_ELIGIBLE"),
-            [NOT_ELIGIBLE, flagged()],
-            "ESC-1",
-            id="deny after escalating",
-        ),
-        pytest.param(escalation(), [eligibility()], "no escalation", id="nothing saved"),
-        pytest.param(
-            escalation(escalation_id="ESC-2"), [flagged()], "ESC-1", id="wrong escalation id"
-        ),
-        pytest.param(escalation(escalation_id=None), [flagged()], "ESC-1", id="no escalation id"),
-        pytest.param(
-            escalation(reason_code="VAGUE_REQUEST"),
-            [flagged()],
-            "EXCEPTION_REQUEST",
-            id="code differs from the record",
+            draft(decision="deny", reason_code="AT_MAX_QUANTITY"),
+            [MISSING_DATE_AT_MAX],
+            "needs_review",
+            id="at max, but needs_review",
         ),
         pytest.param(
-            escalation(message_to_employee="Sent to a reviewer."),
-            [flagged()],
-            "message",
-            id="id missing from the message",
+            draft(reason_code="RECORDS_INCOMPLETE"),
+            [MISSING_DATE_AT_MAX],
+            "needs_review",
+            id="approve needs_review on basis refresh",
+        ),
+        pytest.param(escalation(), [eligibility()], "approve", id="exception, policy allows it"),
+        pytest.param(escalation(), [], "no eligibility", id="exception without a check"),
+        pytest.param(escalation(), [HEADSET], "for monitor", id="exception, other item checked"),
+        pytest.param(
+            escalation("UNKNOWN_EMPLOYEE"), [eligibility()], "EMPLOYEE_NOT_FOUND", id="known"
+        ),
+        pytest.param(
+            escalation("CLAIM_CONTRADICTS_RECORDS"),
+            [MISSING_DATE_AT_MAX],
+            "RECORDS_INCOMPLETE",
+            id="needs_review comes first",
+        ),
+        pytest.param(
+            escalation("ITEM_NOT_IN_CATALOG"), [NOT_DUE], "not_eligible", id="item in catalog"
+        ),
+        pytest.param(escalation("AGENT_STEP_LIMIT"), [], "code", id="code-only reason"),
+        pytest.param(
+            escalation("VAGUE_REQUEST"),
+            [NOT_FOUND],
+            "UNKNOWN_EMPLOYEE",
+            id="unknown employee comes first",
         ),
     ],
 )
 def test_check_finds_the_problem(proposed, steps, problem):
-    issues = check_draft(proposed, steps)
+    [issue] = check_draft(proposed, steps)
 
-    assert len(issues) == 1
-    assert problem in issues[0]
+    assert problem in issue
 
 
 def test_failed_tool_results_do_not_count():
@@ -177,10 +210,23 @@ def test_failed_tool_results_do_not_count():
     assert "no eligibility" in check_draft(draft(), [unknown, text, blocked])[0]
 
 
-def test_check_reports_every_problem():
-    proposed = draft(reason_code="REFRESH_DUE", item="laptop")
+@pytest.mark.parametrize(
+    "observation",
+    [
+        pytest.param({"status": "eligible", "reason_code": "WITHIN_LIMIT"}, id="no item"),
+        pytest.param({"item": "monitor", "status": "eligible"}, id="no reason code"),
+        pytest.param(
+            {"item": "monitor", "status": "maybe", "reason_code": "WITHIN_LIMIT"},
+            id="unknown status",
+        ),
+    ],
+)
+def test_incomplete_eligibility_result_does_not_count(observation):
+    incomplete = Step("", "check_request_eligibility", {}, observation, False)
 
-    assert len(check_draft(proposed, [eligibility()])) == 2
+    assert check_draft(draft(), [incomplete]) == [
+        "approve, but there is no eligibility result for monitor"
+    ]
 
 
 # ---------------------------------------------------------------- critic
@@ -276,34 +322,8 @@ def test_catalog_matches_the_domain():
 # ---------------------------------------------------------------- the review
 
 
-def run_review(llm, proposed, steps):
-    return asyncio.run(review_draft(llm, REQUEST, proposed, steps))
-
-
-def test_review_runs_both_checks():
-    current = run_review(FakeLLM(review(BY_FRIDAY)), draft(), [eligibility()])
-
-    assert current.draft == as_json(draft())
-    assert (current.code_issues, len(current.critic_issues)) == ([], 1)
-    assert current.passed is False
-
-
-def test_review_passes_a_clean_draft():
-    assert run_review(FakeLLM(review()), draft(), [eligibility()]).passed is True
-
-
-def test_failed_code_check_skips_the_critic():
-    llm = FakeLLM()
-
-    current = run_review(llm, draft(), [NOT_ELIGIBLE])
-
-    assert current.draft == as_json(draft())
-    assert current.critic_issues is None
-    assert llm.calls == []
-
-
 def test_no_verdict_is_an_issue():
-    current = run_review(FakeLLM(reply(stop="refusal")), draft(), [eligibility()])
+    current = Review(as_json(draft()), [], None)
 
     assert (current.passed, current.no_verdict) == (False, True)
     assert "no verdict" in current.issues[0]
@@ -326,6 +346,16 @@ def test_format_review_shows_the_draft_and_the_critic_issues():
         "  Critic:      1 issue\n"
         '    - "by Friday": No tool result mentions a date.'
     )
+
+
+def test_critic_checks_the_note_for_the_reviewer():
+    assert "escalation_reason" in CRITIC
+
+
+def test_format_review_shows_the_note_for_the_reviewer():
+    current = Review(as_json(escalation("VAGUE_REQUEST", None)), [])
+
+    assert "  Reviewer:    Employee says the monitor broke." in format_review(1, current)
 
 
 @pytest.mark.parametrize(
@@ -379,3 +409,32 @@ def test_cli_prints_the_reflected_decision(server_db, monkeypatch, capsys):
     assert "Reflection: draft 1" in output and "Reflection: draft 2" in output
     assert GOOD.message_to_employee in final
     assert BAD.message_to_employee not in final
+
+
+@pytest.fixture
+def unrecorded_run(server_db, monkeypatch):
+    """The CLI, with an agent whose escalation could not be saved."""
+    monkeypatch.setenv("MCP_TRANSPORT", "stdio")
+    monkeypatch.setattr("equipment.agent.cli.FoundryClient.from_env", FakeLLM)
+    unrecorded = FinalDecision(
+        decision="escalate",
+        reason_code="AGENT_STEP_LIMIT",
+        item=None,
+        message_to_employee="Your request could not be recorded for human review.",
+    )
+
+    async def agent(*args, **kwargs):
+        return AgentResult(unrecorded, Stop.STEP_LIMIT)
+
+    monkeypatch.setattr("equipment.agent.cli.run_agent", agent)
+    return lambda: asyncio.run(run(REQUEST))
+
+
+def test_cli_fails_when_the_escalation_was_not_recorded(unrecorded_run):
+    assert unrecorded_run() == 1
+
+
+def test_cli_says_the_escalation_was_not_recorded(unrecorded_run, capsys):
+    unrecorded_run()
+
+    assert "escalation not recorded" in capsys.readouterr().err

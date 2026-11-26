@@ -13,7 +13,7 @@ import anthropic
 from equipment.agent.llm import FoundryClient
 from equipment.agent.mcp_client import ServerUnavailable, connect
 from equipment.agent.react import run_agent
-from equipment.agent.reflection import review_draft
+from equipment.agent.reflection import critique
 from equipment.agent.trace import format_decision, format_outcome, format_review, format_step
 from equipment.agent.types import Request, Review, Step
 
@@ -59,7 +59,7 @@ async def run(request: Request) -> int:
                 llm,
                 mcp,
                 request,
-                reviewer=partial(review_draft, llm),
+                critic=partial(critique, llm),
                 on_step=show_step,
                 on_review=show_review,
             )
@@ -71,15 +71,22 @@ async def run(request: Request) -> int:
             return 1
     print(format_outcome(result))
     print(format_decision(result.decision))
+    if not result.recorded:
+        print("escalation not recorded: the request must be submitted again", file=sys.stderr)
+        return 1
     return 0
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.employee and not args.text:
-        parser.error("--text is required with --employee")
-    request = load_scenario(args.scenario) if args.scenario else Request(args.employee, args.text)
+    if args.scenario is not None:  # 0 is a number too, and load_scenario rejects it
+        request = load_scenario(args.scenario)
+    else:
+        try:
+            request = Request(args.employee, args.text)
+        except ValueError as error:
+            parser.error(f"{error} (--employee and --text)")
     try:
         sys.exit(asyncio.run(run(request)))
     except ServerUnavailable as error:

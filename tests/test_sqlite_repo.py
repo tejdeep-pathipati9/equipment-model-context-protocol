@@ -1,6 +1,9 @@
 """SqliteRepository against a fresh seeded temp DB."""
 
+import sqlite3
 from datetime import date
+
+import pytest
 
 from equipment.data.seed import EMPLOYEES, EQUIPMENT, POLICIES
 from equipment.domain.models import Employee, EquipmentUnit, PolicyLimit
@@ -63,3 +66,38 @@ def test_list_policies_unknown_role(repo):
 
 def test_list_catalog(repo):
     assert repo.list_catalog() == ["headset", "keyboard_mouse", "laptop", "monitor", "phone"]
+
+
+MANAGER_LAPTOP = "WHERE role = 'manager' AND item = 'laptop'"
+E001_LAPTOP = "WHERE employee_id = 'E001' AND item = 'laptop'"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param(f"UPDATE policies SET max_qty = -1 {MANAGER_LAPTOP}", id="negative quantity"),
+        pytest.param(
+            f"UPDATE policies SET max_qty = 1.5 {MANAGER_LAPTOP}", id="fractional quantity"
+        ),
+        pytest.param(
+            f"UPDATE policies SET max_qty = 'two' {MANAGER_LAPTOP}", id="quantity as text"
+        ),
+        pytest.param(
+            f"UPDATE policies SET refresh_months = -24 {MANAGER_LAPTOP}", id="negative interval"
+        ),
+        pytest.param(
+            f"UPDATE policies SET refresh_months = 0 {MANAGER_LAPTOP}", id="no interval, max 1"
+        ),
+        pytest.param(
+            f"UPDATE policies SET refresh_months = 'soon' {MANAGER_LAPTOP}", id="interval as text"
+        ),
+        pytest.param(f"UPDATE equipment SET issued_on = 'last May' {E001_LAPTOP}", id="vague date"),
+        pytest.param(
+            f"UPDATE equipment SET issued_on = '2025-02-30' {E001_LAPTOP}", id="no such day"
+        ),
+        pytest.param("UPDATE employees SET hire_date = 'soon' WHERE id = 'E001'", id="hire date"),
+    ],
+)
+def test_database_refuses_a_bad_value(seeded_conn, change):
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK"):
+        seeded_conn.execute(change)

@@ -2,15 +2,18 @@
 
 import json
 
-from equipment.agent.types import AgentResult, Draft, Outcome, Review, Step
+from equipment.agent.types import AgentResult, FinalDecision, Outcome, Review, Step
+from equipment.domain.models import Decision
 
 
 def format_step(number: int, step: Step) -> str:
     observation = json.dumps(step.observation)
     if step.is_error:
         observation = f"ERROR {observation}"
+    actor = "  Actor:       code\n" if step.actor == "code" else ""
     return (
         f"Step {number}\n"
+        f"{actor}"
         f"  Thought:     {step.thought or '(none)'}\n"
         f"  Action:      {step.action}({json.dumps(step.arguments)})\n"
         f"  Observation: {observation}"
@@ -26,10 +29,12 @@ def format_review(number: int, review: Review) -> str:
         critic = "no verdict"
     else:
         critic = _result(review.issues)
+    note = draft.get("escalation_reason")
     lines = [
         f"Reflection: draft {number}",
         f"  Decision:    {str(draft.get('decision', '-')).upper()} ({draft.get('reason_code')})",
         f"  Message:     {draft.get('message_to_employee', '-')}",
+        *([f"  Reviewer:    {note}"] if note else []),
         f"  Code check:  {_result(review.code_issues)}",
         f"  Critic:      {critic}",
         *(f"    - {issue}" for issue in review.issues),
@@ -56,14 +61,20 @@ def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
-def format_decision(decision: Draft) -> str:
+def format_decision(decision: FinalDecision) -> str:
     rule = "=" * 72
     lines = [
         rule,
         f"Decision:    {decision.decision.upper()} ({decision.reason_code})",
         f"Item:        {decision.item or '-'}",
-        f"Escalation:  {decision.escalation_id or '-'}",
+        f"Escalation:  {_escalation(decision)}",
         f"Message:     {decision.message_to_employee}",
         rule,
     ]
     return "\n".join(lines)
+
+
+def _escalation(decision: FinalDecision) -> str:
+    if decision.escalation_id:
+        return decision.escalation_id
+    return "NOT RECORDED" if decision.decision == Decision.ESCALATE else "-"

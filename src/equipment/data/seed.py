@@ -5,10 +5,12 @@ Synthetic data from docs/requirements.md §2 and §6, as of 2026-12-01.
 
 import os
 import sqlite3
+from contextlib import closing
 from importlib.resources import files
 from pathlib import Path
 
 DEFAULT_DB_PATH = "./data/equipment.db"
+SCHEMA_VERSION = 2  # PRAGMA user_version in schema.sql; 2 added the CHECK constraints
 
 EMPLOYEES = [
     # id, name, role, hire_date
@@ -70,6 +72,11 @@ def create_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(schema)
 
 
+def is_current(conn: sqlite3.Connection) -> bool:
+    """False for a database made by an older schema: CREATE TABLE IF NOT EXISTS won't update it."""
+    return conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+
+
 def seed_data(conn: sqlite3.Connection) -> None:
     conn.executemany("INSERT INTO employees VALUES (?, ?, ?, ?)", EMPLOYEES)
     conn.executemany(
@@ -81,7 +88,12 @@ def seed_data(conn: sqlite3.Connection) -> None:
 def main() -> None:
     path = db_path()
     if path.exists():
-        print(f"seed: {path} already exists, leaving it as is")
+        with closing(sqlite3.connect(path)) as conn:
+            current = is_current(conn)
+        if current:
+            print(f"seed: {path} already exists, leaving it as is")
+        else:
+            print(f"seed: {path} is from an older schema; delete it and run seed again")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:

@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from equipment.domain.models import Decision, ReasonCode
+from equipment.domain.models import Basis, Decision, ReasonCode, Status
 
 # ---------------------------------------------------------------- model outputs
 
@@ -19,11 +19,24 @@ class ModelOutput(BaseModel):
 
 
 class Draft(ModelOutput):
+    """The model's decision. It has no escalation ID: code saves an escalation after review."""
+
     decision: Decision
     reason_code: ReasonCode
     item: str | None
     message_to_employee: str = Field(min_length=1)
-    escalation_id: str | None
+    escalation_reason: str | None = Field(
+        description="escalate only: a short note for the human reviewer; null otherwise"
+    )
+
+    @model_validator(mode="after")
+    def _reason_only_for_an_escalation(self) -> "Draft":
+        escalating = self.decision == Decision.ESCALATE
+        if escalating and not self.escalation_reason:
+            raise ValueError("an escalation needs an escalation_reason for the human reviewer")
+        if not escalating and self.escalation_reason:
+            raise ValueError(f"{self.decision} must not have an escalation_reason")
+        return self
 
 
 class CriticIssue(ModelOutput):
@@ -35,18 +48,73 @@ class CriticReview(ModelOutput):
     issues: list[CriticIssue]
 
 
+# ---------------------------------------------------------------- tool results
+
+
+class Eligibility(BaseModel):
+    """The fields of a check_request_eligibility result that the code check relies on.
+
+    The result has more fields (held, max_qty, ...); they are ignored here.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    item: str
+    status: Status
+    reason_code: ReasonCode
+    basis: Basis | None
+
+
 def validation_issues(error: ValidationError) -> list[str]:
     """e.g. "decision: Input should be 'approve', 'deny' or 'escalate'"."""
-    return [f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in error.errors()]
+    issues = []
+    for e in error.errors():
+        field = ".".join(map(str, e["loc"]))  # empty for a rule across fields
+        issues.append(f"{field}: {e['msg']}" if field else e["msg"])
+    return issues
 
 
 # ---------------------------------------------------------------- the run
 
 
+class FinalDecision(BaseModel):
+    """What the employee gets: the accepted draft, and the ID of the escalation code saved."""
+
+    model_config = ConfigDict(frozen=True)
+
+    decision: Decision
+    reason_code: ReasonCode
+    item: str | None
+    message_to_employee: str
+    escalation_id: str | None = None
+
+    @classmethod
+    def from_draft(
+        cls, draft: Draft, escalation_id: str | None = None, message: str | None = None
+    ) -> "FinalDecision":
+        return cls(
+            decision=draft.decision,
+            reason_code=draft.reason_code,
+            item=draft.item,
+            message_to_employee=message or draft.message_to_employee,
+            escalation_id=escalation_id,
+        )
+
+
 @dataclass(frozen=True)
 class Request:
+    """Checked once, wherever it comes from: " E001 " -> "E001"; the text is kept as written."""
+
     employee_id: str  # from metadata, never from the text
     text: str
+
+    def __post_init__(self) -> None:
+        employee_id = (self.employee_id or "").strip()
+        if not employee_id:
+            raise ValueError("the request needs an employee ID")
+        if not (self.text or "").strip():
+            raise ValueError("the request needs text")
+        object.__setattr__(self, "employee_id", employee_id)  # frozen, so set it directly
 
 
 @dataclass(frozen=True)
@@ -56,6 +124,7 @@ class Step:
     arguments: dict[str, Any]
     observation: Any
     is_error: bool
+    actor: str = "agent"  # "code" for an action the model did not choose, e.g. saving
 
 
 @dataclass(frozen=True)
@@ -81,7 +150,8 @@ class Review:
         return self.code_issues or self.critic_issues or []
 
 
-Reviewer = Callable[[Request, Draft, list[Step]], Awaitable[Review]]
+Critic = Callable[[Request, Draft, list[Step]], Awaitable[list[str] | None]]
+"""The critic's issues with a draft: empty = pass, None = no verdict."""
 
 
 class Stop(StrEnum):
@@ -104,10 +174,16 @@ class Outcome(StrEnum):
 
 @dataclass
 class AgentResult:
-    decision: Draft
+    decision: FinalDecision
     stop: Stop
     steps: list[Step] = field(default_factory=list)
     reviews: list[Review] = field(default_factory=list)
+
+    @property
+    def recorded(self) -> bool:
+        """False for an escalation that could not be saved: no human will ever see it."""
+        decision = self.decision
+        return decision.decision != Decision.ESCALATE or decision.escalation_id is not None
 
     @property
     def outcome(self) -> Outcome:
