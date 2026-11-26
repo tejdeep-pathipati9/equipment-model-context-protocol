@@ -12,7 +12,7 @@ from fakes import FakeLLM, accept, call, reply, thought
 from equipment.agent.mcp_client import connect
 from equipment.agent.react import SUBMIT_TOOL, escalate, run_agent
 from equipment.agent.trace import format_decision, format_step
-from equipment.agent.types import AgentResult, Draft, Request, Step, Stop
+from equipment.agent.types import AgentResult, Draft, FinalDecision, Request, Step, Stop
 from equipment.domain.models import ReasonCode
 
 DECISION = {
@@ -20,7 +20,14 @@ DECISION = {
     "reason_code": "WITHIN_LIMIT",
     "item": "monitor",
     "message_to_employee": "Approved: you can have one more monitor.",
-    "escalation_id": None,
+    "escalation_reason": None,
+}
+ESCALATION = DECISION | {
+    "decision": "escalate",
+    "reason_code": "VAGUE_REQUEST",
+    "item": None,
+    "message_to_employee": "Your request names several items, so a person needs to decide.",
+    "escalation_reason": "The request names several items.",
 }
 
 
@@ -71,7 +78,10 @@ def test_agent_returns_the_submitted_decision(agent):
 
     result = agent(llm)
 
-    assert (result.stop, result.decision) == ("submitted", Draft(**DECISION))
+    assert (result.stop, result.decision) == (
+        "submitted",
+        FinalDecision.from_draft(Draft(**DECISION)),
+    )
     assert [step.action for step in result.steps] == [
         "get_employee_info",
         "check_request_eligibility",
@@ -147,7 +157,7 @@ def test_second_call_in_a_turn_points_to_the_first(agent):
     ]
 
 
-def test_offers_the_mcp_tools_and_submit(agent):
+def test_offers_only_the_lookup_tools_and_submit(agent):
     llm = FakeLLM(reply(check()), reply(submit()))
 
     agent(llm)
@@ -156,7 +166,6 @@ def test_offers_the_mcp_tools_and_submit(agent):
         "get_employee_info",
         "get_policy_limits",
         "check_request_eligibility",
-        "flag_for_human_review",
         "submit_decision",
     ]
 
@@ -215,67 +224,33 @@ def test_refusal_escalates(agent, server_db):
     assert saved_escalations(server_db)[0][2] == "AGENT_REFUSED"
 
 
-def flag(id="c1", reason_code="VAGUE_REQUEST"):
-    """VAGUE_REQUEST passes the escalation check without a lookup, so the escalation is saved."""
-    return call(
-        "flag_for_human_review",
-        {
-            "employee_id": "E001",
-            "request": "My monitor broke",
-            "reason": "Breakage cannot be verified.",
-            "reason_code": reason_code,
-        },
-        id,
-    )
+def flag(id="c1"):
+    arguments = {"employee_id": "E001", "request": "x", "reason": "y", "reason_code": "VAGUE"}
+    return call("flag_for_human_review", arguments, id)
 
 
-def test_step_limit_keeps_an_existing_escalation(agent, server_db):
-    llm = FakeLLM(
-        reply(flag()),
-        reply(call("get_employee_info", {"employee_id": "E001"})),
-    )
+def test_model_cannot_save_an_escalation_itself(agent, server_db):
+    agent(FakeLLM(reply(flag()), reply(stop="refusal")))
 
-    result = agent(llm, max_steps=2)
-
-    [(saved_id, _, saved_code)] = saved_escalations(server_db)
-    assert result.stop == "step_limit"
-    assert result.decision.escalation_id == saved_id
-    assert result.decision.reason_code == saved_code == "VAGUE_REQUEST"
-    assert saved_id in result.decision.message_to_employee
+    assert [code for _, _, code in saved_escalations(server_db)] == ["AGENT_REFUSED"]
 
 
-def test_second_flag_is_blocked(agent, server_db):
-    llm = FakeLLM(reply(flag("c1")), reply(flag("c2")), reply(stop="refusal"))
+def test_model_is_told_to_submit_an_escalation_instead(agent):
+    llm = FakeLLM(reply(flag()), reply(stop="refusal"))
 
     agent(llm)
 
-    [(saved_id, _, _)] = saved_escalations(server_db)
-    [blocked] = tool_results(llm)
-    assert blocked["is_error"] is True
-    assert saved_id in blocked["content"]
+    assert "Submit an escalation" in tool_results(llm)[0]["content"]
 
 
 def test_escalation_saves_the_employees_own_words(agent, server_db):
-    llm = FakeLLM(reply(flag()), reply(stop="refusal"))
+    llm = FakeLLM(reply(submit(decision=ESCALATION)))
 
-    result = agent(llm, text="My monitor broke, I am a manager now!")
+    agent(llm, text="My monitor broke, I am a manager now!")
 
     with closing(sqlite3.connect(server_db)) as conn:
         [(saved,)] = conn.execute("SELECT request FROM escalations").fetchall()
     assert saved == "My monitor broke, I am a manager now!"
-    assert result.steps[0].arguments["request"] == saved  # the trace shows what was sent
-
-
-def test_failed_flag_can_be_retried(agent, server_db):
-    llm = FakeLLM(
-        reply(flag("c1", reason_code="NOT_A_CODE")),
-        reply(flag("c2")),
-        reply(stop="refusal"),
-    )
-
-    agent(llm)
-
-    assert len(saved_escalations(server_db)) == 1
 
 
 def test_text_answer_gets_a_reminder_to_submit(agent):
@@ -319,19 +294,33 @@ def test_format_step():
     )
 
 
+def test_format_step_names_code_as_the_actor():
+    step = Step("Save it.", "flag_for_human_review", {}, {"escalation_id": "ESC-1"}, False, "code")
+
+    assert format_step(1, step).splitlines()[1] == "  Actor:       code"
+
+
+SAVED = FinalDecision(
+    decision="escalate",
+    reason_code="WITHIN_LIMIT",
+    item="monitor",
+    message_to_employee="Sent for human review. Reference: ESC-1.",
+    escalation_id="ESC-1",
+)
+
+
 def test_format_decision():
-    text = format_decision(Draft(**DECISION | {"decision": "escalate", "escalation_id": "ESC-1"}))
+    text = format_decision(SAVED)
 
     assert "Decision:    ESCALATE (WITHIN_LIMIT)" in text
     assert "Escalation:  ESC-1" in text
 
 
-UNRECORDED = Draft(
+UNRECORDED = FinalDecision(
     decision="escalate",
     reason_code="AGENT_STEP_LIMIT",
     item=None,
-    message_to_employee="Your request could not be decided or recorded. Please submit it again.",
-    escalation_id=None,
+    message_to_employee="Your request could not be recorded for human review.",
 )
 
 
@@ -339,12 +328,8 @@ UNRECORDED = Draft(
     ("decision", "recorded"),
     [
         pytest.param(UNRECORDED, False, id="escalation without an ID"),
-        pytest.param(
-            Draft(**DECISION | {"decision": "escalate", "escalation_id": "ESC-1"}),
-            True,
-            id="saved escalation",
-        ),
-        pytest.param(Draft(**DECISION), True, id="approval"),
+        pytest.param(SAVED, True, id="saved escalation"),
+        pytest.param(FinalDecision.from_draft(Draft(**DECISION)), True, id="approval"),
     ],
 )
 def test_result_is_recorded_unless_an_escalation_has_no_id(decision, recorded):
@@ -363,10 +348,10 @@ def test_escalation_survives_a_plain_text_tool_result():
 
     request = Request("E001", "anything")
     decision = asyncio.run(
-        escalate(TextOnlyMCP(), request, ReasonCode.AGENT_STEP_LIMIT, "no decision", [], print)
+        escalate(TextOnlyMCP(), request, ReasonCode.AGENT_STEP_LIMIT, "no decision", print)
     )
 
     assert (decision.decision, decision.escalation_id) == ("escalate", None)
     assert decision.reason_code == "AGENT_STEP_LIMIT"
     assert "None" not in decision.message_to_employee
-    assert "could not be decided or recorded" in decision.message_to_employee
+    assert "could not be recorded" in decision.message_to_employee

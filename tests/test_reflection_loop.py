@@ -1,4 +1,7 @@
-"""A rejected draft goes back to the ReAct loop. Scripted fake LLM, real MCP server over stdio."""
+"""A rejected draft goes back to the ReAct loop; an accepted escalation is saved once, by code.
+
+Scripted fake LLM, real MCP server over stdio.
+"""
 
 import asyncio
 import json
@@ -10,19 +13,32 @@ import pytest
 from fakes import FakeLLM, accept, call, reply, thought
 
 from equipment.agent.mcp_client import connect
-from equipment.agent.prompts import CRITIC, REJECTED
+from equipment.agent.prompts import REJECTED
 from equipment.agent.react import run_agent
 from equipment.agent.reflection import critique
-from equipment.agent.types import Draft, Outcome, Proposal, Request, Stop
+from equipment.agent.types import Draft, FinalDecision, Outcome, Request, Stop
 
 GOOD = {
     "decision": "approve",
     "reason_code": "WITHIN_LIMIT",
     "item": "monitor",
     "message_to_employee": "Approved. I cannot confirm a delivery date.",
-    "escalation_id": None,
+    "escalation_reason": None,
 }
 BAD = GOOD | {"message_to_employee": "Approved. You will have it by Friday."}
+ESCALATION = {
+    "decision": "escalate",
+    "reason_code": "VAGUE_REQUEST",
+    "item": None,
+    "message_to_employee": "Your request names several items, so a person needs to decide.",
+    "escalation_reason": "The request names several items.",
+}
+# E001 may have a second monitor (WITHIN_LIMIT), so this must be an approval instead.
+WRONG_ESCALATION = ESCALATION | {
+    "reason_code": "EXCEPTION_REQUEST",
+    "item": "monitor",
+    "escalation_reason": "Monitor reported broken.",
+}
 REQUEST = Request("E001", "Can I get a second monitor by Friday?")
 ISSUE = '"by Friday": No tool result mentions a date.'
 
@@ -36,14 +52,8 @@ def look_up(item="monitor", employee_id="E001"):
     return reply(call("check_request_eligibility", arguments, "c1"))
 
 
-def flag(reason_code="EXCEPTION_REQUEST"):
-    arguments = {
-        "employee_id": "E001",
-        "request": "broken",
-        "reason": "Breakage cannot be verified.",
-        "reason_code": reason_code,
-    }
-    return reply(call("flag_for_human_review", arguments, "f1"))
+def approved(draft):
+    return FinalDecision.from_draft(Draft(**draft))
 
 
 class FakeCritic:
@@ -77,6 +87,11 @@ def saved(db_path):
         return conn.execute("SELECT id, reason_code, reason FROM escalations").fetchall()
 
 
+def writes(db_path):
+    """How many escalations reached the database: every MCP write saves one."""
+    return len(saved(db_path))
+
+
 # ---------------------------------------------------------------- the loop and a critic
 
 
@@ -88,7 +103,7 @@ def test_accepted_first_draft_is_confirmed(agent):
     assert (result.stop, result.outcome, result.decision) == (
         Stop.SUBMITTED,
         Outcome.CONFIRMED,
-        Draft(**GOOD),
+        approved(GOOD),
     )
     [(request, draft, steps)] = critic.calls
     assert (request, draft) == (REQUEST, Draft(**GOOD))
@@ -105,7 +120,7 @@ def test_rejected_draft_goes_back_to_the_model_with_its_issues(agent):
     issues, rules = rejection["content"]
     assert json.loads(issues["text"]) == {"accepted": False, "issues": [ISSUE]}
     assert rules["text"] == REJECTED
-    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
+    assert (result.outcome, result.decision) == (Outcome.REVISED, approved(GOOD))
 
 
 def test_wording_fix_needs_one_more_turn_and_no_lookup(agent):
@@ -175,17 +190,6 @@ def test_no_verdict_escalates_at_once(agent, server_db):
     assert "no verdict" in saved(server_db)[0][2]
 
 
-def test_failed_reflection_keeps_a_saved_escalation(agent, server_db):
-    llm = FakeLLM(flag("VAGUE_REQUEST"), submit(BAD))
-
-    result = agent(llm, FakeCritic([]), max_revisions=0)
-
-    [(id, reason_code, _)] = saved(server_db)
-    assert result.decision.escalation_id == id
-    assert result.decision.reason_code == reason_code == "VAGUE_REQUEST"
-    assert "Friday" not in result.decision.message_to_employee
-
-
 def test_revisions_share_the_step_limit(agent):
     llm = FakeLLM(submit(BAD), look_up(), look_up())
 
@@ -219,7 +223,7 @@ def test_code_check_runs_before_the_critic(agent):
     result = agent(llm, critic)
 
     assert "no eligibility result" in result.steps[0].observation["issues"][0]
-    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
+    assert (result.outcome, result.decision) == (Outcome.REVISED, approved(GOOD))
     assert len(critic.calls) == 1  # the critic never saw the draft the code check rejected
 
 
@@ -229,93 +233,94 @@ def test_code_check_runs_even_when_the_critic_accepts_everything(agent):
     result = agent(llm, accept)
 
     assert "no eligibility result" in result.steps[0].observation["issues"][0]
-    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
+    assert (result.outcome, result.decision) == (Outcome.REVISED, approved(GOOD))
 
 
-# ---------------------------------------------------------------- escalations are reviewed first
-
-REFUSE = reply(stop="refusal")  # ends the run, so a test can look at what was saved
+# ---------------------------------------------------------------- an escalation is saved once
 
 
-def test_wrong_escalation_is_not_saved(agent, server_db):
-    llm = FakeLLM(look_up(), flag("EXCEPTION_REQUEST"), REFUSE)
+def test_accepted_escalation_is_saved_once(agent, server_db):
+    agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic([]))
 
-    agent(llm, FakeCritic())
-
-    assert [code for _, code, _ in saved(server_db)] == ["AGENT_REFUSED"]
+    assert writes(server_db) == 1
 
 
-def test_rejected_escalation_goes_back_to_the_model(agent):
-    llm = FakeLLM(look_up(), flag("EXCEPTION_REQUEST"), REFUSE)
+def test_rejected_escalation_then_approval_saves_nothing(agent, server_db):
+    llm = FakeLLM(look_up(), submit(WRONG_ESCALATION, "s1"), submit(GOOD, "s2"))
 
-    result = agent(llm, FakeCritic())
+    agent(llm, FakeCritic([]))
+
+    assert writes(server_db) == 0
+
+
+def test_rejected_draft_then_accepted_escalation_saves_one(agent, server_db):
+    llm = FakeLLM(look_up(), submit(BAD, "s1"), submit(ESCALATION, "s2"))
+
+    agent(llm, FakeCritic([ISSUE], []))
+
+    assert writes(server_db) == 1
+
+
+def test_critic_rejection_saves_nothing(agent, server_db):
+    llm = FakeLLM(look_up(), submit(ESCALATION, "s1"), submit(GOOD, "s2"))
+
+    agent(llm, FakeCritic([ISSUE], []))
+
+    assert writes(server_db) == 0
+
+
+def test_wrong_escalation_goes_back_to_the_model(agent):
+    llm = FakeLLM(look_up(), submit(WRONG_ESCALATION, "s1"), submit(GOOD, "s2"))
+
+    result = agent(llm, FakeCritic([]))
 
     assert "WITHIN_LIMIT" in result.steps[1].observation["issues"][0]
 
 
-def test_model_can_approve_after_its_escalation_is_rejected(agent):
-    llm = FakeLLM(look_up(), flag("EXCEPTION_REQUEST"), submit(GOOD))
+def test_escalation_is_saved_with_the_reviewed_reason(agent, server_db):
+    agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic([]))
 
-    result = agent(llm, FakeCritic([]))
-
-    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
-
-
-def test_critic_can_stop_an_escalation_before_it_is_saved(agent, server_db):
-    llm = FakeLLM(look_up(), flag("VAGUE_REQUEST"), REFUSE)
-
-    agent(llm, FakeCritic([ISSUE]))
-
-    assert [code for _, code, _ in saved(server_db)] == ["AGENT_REFUSED"]
+    [(_, reason_code, reason)] = saved(server_db)
+    assert (reason_code, reason) == ("VAGUE_REQUEST", "The request names several items.")
 
 
-def test_reviewed_escalation_is_saved(agent, server_db):
-    llm = FakeLLM(look_up(), flag("VAGUE_REQUEST"), REFUSE)
+def test_reply_gets_the_saved_reference(agent, server_db):
+    result = agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic([]))
 
-    agent(llm, FakeCritic([]))
-
-    assert [code for _, code, _ in saved(server_db)] == ["VAGUE_REQUEST"]
-
-
-def test_critic_sees_the_proposed_escalation(agent):
-    critic = FakeCritic([])
-
-    agent(FakeLLM(look_up(), flag("VAGUE_REQUEST"), REFUSE), critic)
-
-    [(_, proposal, _)] = critic.calls
-    assert proposal == Proposal(reason_code="VAGUE_REQUEST", reason="Breakage cannot be verified.")
+    [(saved_id, _, _)] = saved(server_db)
+    handoff = f"Sent for human review. Reference: {saved_id}."
+    assert result.decision == FinalDecision.from_draft(
+        Draft(**ESCALATION),
+        escalation_id=saved_id,
+        message=f"{ESCALATION['message_to_employee']} {handoff}",
+    )
 
 
-def test_escalation_is_saved_when_the_critic_gives_no_verdict(agent, server_db):
-    llm = FakeLLM(look_up(), flag("VAGUE_REQUEST"), REFUSE)
+def test_save_is_a_step_made_by_code(agent):
+    result = agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic([]))
 
-    agent(llm, FakeCritic(None))
+    assert (result.steps[-1].action, result.steps[-1].actor) == ("flag_for_human_review", "code")
+
+
+def test_no_verdict_escalation_is_saved_with_its_proposed_code(agent, server_db):
+    agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic(None))
 
     assert [code for _, code, _ in saved(server_db)] == ["VAGUE_REQUEST"]
 
 
-def test_no_verdict_on_an_escalation_is_not_a_revision(agent):
-    llm = FakeLLM(look_up(), flag("VAGUE_REQUEST"), submit(GOOD), REFUSE)
+def test_no_verdict_escalation_tells_the_reviewer(agent, server_db):
+    agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic(None))
 
-    result = agent(llm, FakeCritic(None), max_revisions=1)
-
-    assert result.stop == Stop.REFUSED  # only the approval was rejected
-
-
-def test_rejected_escalation_counts_as_a_revision(agent):
-    llm = FakeLLM(look_up(), flag("EXCEPTION_REQUEST"))
-
-    result = agent(llm, FakeCritic(), max_revisions=0)
-
-    assert result.stop == Stop.REFLECTION_FAILED
+    [(_, _, reason)] = saved(server_db)
+    assert "the critic gave no verdict" in reason
 
 
-def test_accepted_escalation_does_not_use_up_a_revision(agent):
-    llm = FakeLLM(look_up(), flag("VAGUE_REQUEST"), submit(GOOD), REFUSE)
+def test_no_verdict_escalation_sends_the_standard_message(agent):
+    result = agent(FakeLLM(look_up(), submit(ESCALATION)), FakeCritic(None))
 
-    result = agent(llm, FakeCritic([]), max_revisions=1)
-
-    assert result.stop == Stop.REFUSED  # one rejection (the approval) is within the limit
+    assert result.decision.message_to_employee.startswith(
+        "Your request could not be decided automatically."
+    )
 
 
 # ---------------------------------------------------------------- invalid drafts
@@ -338,7 +343,7 @@ def test_invalid_draft_goes_back_to_the_model(agent, invalid, field):
 
     assert any(field in issue for issue in result.steps[1].observation["issues"])
     assert result.reviews[0].draft == invalid
-    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
+    assert (result.outcome, result.decision) == (Outcome.REVISED, approved(GOOD))
     assert len(critic.calls) == 1  # the invalid draft never reaches the critic
 
 
@@ -375,55 +380,19 @@ def test_missing_lookup_is_done_before_the_draft_is_accepted(agent):
         "submit_decision",
     ]
     assert "no eligibility result" in result.steps[0].observation["issues"][0]
-    assert (result.outcome, result.decision) == (Outcome.REVISED, Draft(**GOOD))
+    assert (result.outcome, result.decision) == (Outcome.REVISED, approved(GOOD))
 
 
 def test_approval_can_become_a_real_escalation(agent, server_db):
-    """The reviewer says escalate; the model flags it itself, with the right reason code."""
-    issue = {"quote": "approve", "problem": "Rule 4 requires escalation."}
-    llm = FakeLLM(look_up(), submit(GOOD, "s1"), critic_says(issue), flag("VAGUE_REQUEST"))
+    issue = {"quote": "approve", "problem": "Rule 2: the request names several items."}
 
-    def submit_saved_id():
-        [(id, _, _)] = saved(server_db)
-        return submit(
-            GOOD
-            | {
-                "decision": "escalate",
-                "reason_code": "VAGUE_REQUEST",
-                "message_to_employee": f"Passed to a human reviewer ({id}).",
-                "escalation_id": id,
-            },
-            "s2",
-        )
-
-    async def create(**sent):
-        llm.calls.append(sent)
-        if llm.replies:
-            return llm.replies.pop(0)
-        return critic_says() if sent["system"] == CRITIC else submit_saved_id()
-
-    llm.create = create
-    result = agent(llm, partial(critique, llm))
-
-    assert (result.stop, result.outcome) == (Stop.SUBMITTED, Outcome.REVISED)
-    assert (result.decision.decision, result.decision.reason_code) == (
-        "escalate",
-        "VAGUE_REQUEST",
-    )
-    assert len(saved(server_db)) == 1
-
-
-def test_saved_escalation_cannot_become_an_approval(agent, server_db):
-    result, llm = run_reviewed(
+    result, _ = run_reviewed(
         agent,
         look_up(),
-        flag("VAGUE_REQUEST"),
-        critic_says(),
         submit(GOOD, "s1"),
-        submit(GOOD, "s2"),
-        submit(GOOD, "s3"),
+        critic_says(issue),
+        submit(ESCALATION, "s2"),
+        critic_says(),
     )
 
-    assert result.decision.decision == "escalate"
-    assert len(saved(server_db)) == 1
-    assert all("already escalated" in review.issues[0] for review in result.reviews[1:])
+    assert (result.decision.decision, writes(server_db)) == ("escalate", 1)

@@ -14,7 +14,7 @@ from pydantic import ValidationError
 from equipment.agent.llm import LLMClient
 from equipment.agent.prompts import CRITIC
 from equipment.agent.react import SUBMIT
-from equipment.agent.types import CriticReview, Draft, Proposal, Request, Step
+from equipment.agent.types import CriticReview, Draft, Request, Step
 
 REVIEW = "submit_review"
 REVIEW_TOOL: ToolParam = {
@@ -26,11 +26,10 @@ REVIEW_TOOL: ToolParam = {
 
 
 async def critique(
-    llm: LLMClient, request: Request, draft: Draft | Proposal, steps: list[Step]
+    llm: LLMClient, request: Request, draft: Draft, steps: list[Step]
 ) -> list[str] | None:
     """The critic's issues, e.g. '"by Friday": ...'. Empty = pass, None = no verdict."""
-    key = "draft" if isinstance(draft, Draft) else "proposed_escalation"
-    content = json.dumps(_evidence(request, steps) | {key: draft.model_dump(mode="json")})
+    content = json.dumps(_evidence(request, steps) | {"draft": draft.model_dump(mode="json")})
     reply = await llm.create(
         system=CRITIC, messages=[{"role": "user", "content": content}], tools=[REVIEW_TOOL]
     )

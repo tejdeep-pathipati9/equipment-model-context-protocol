@@ -2,7 +2,7 @@
 
 import json
 
-from equipment.agent.types import AgentResult, Draft, Outcome, Review, Step
+from equipment.agent.types import AgentResult, FinalDecision, Outcome, Review, Step
 from equipment.domain.models import Decision
 
 
@@ -10,8 +10,10 @@ def format_step(number: int, step: Step) -> str:
     observation = json.dumps(step.observation)
     if step.is_error:
         observation = f"ERROR {observation}"
+    actor = "  Actor:       code\n" if step.actor == "code" else ""
     return (
         f"Step {number}\n"
+        f"{actor}"
         f"  Thought:     {step.thought or '(none)'}\n"
         f"  Action:      {step.action}({json.dumps(step.arguments)})\n"
         f"  Observation: {observation}"
@@ -27,13 +29,12 @@ def format_review(number: int, review: Review) -> str:
         critic = "no verdict"
     else:
         critic = _result(review.issues)
-    proposed = "reason" in draft  # a proposed escalation, reviewed before it is saved
+    note = draft.get("escalation_reason")
     lines = [
-        f"Reflection: draft {number}" + (" (proposed escalation)" if proposed else ""),
+        f"Reflection: draft {number}",
         f"  Decision:    {str(draft.get('decision', '-')).upper()} ({draft.get('reason_code')})",
-        f"  Reason:      {draft['reason']}"
-        if proposed
-        else f"  Message:     {draft.get('message_to_employee', '-')}",
+        f"  Message:     {draft.get('message_to_employee', '-')}",
+        *([f"  Reviewer:    {note}"] if note else []),
         f"  Code check:  {_result(review.code_issues)}",
         f"  Critic:      {critic}",
         *(f"    - {issue}" for issue in review.issues),
@@ -60,7 +61,7 @@ def _count(number: int, noun: str) -> str:
     return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
 
 
-def format_decision(decision: Draft) -> str:
+def format_decision(decision: FinalDecision) -> str:
     rule = "=" * 72
     lines = [
         rule,
@@ -73,7 +74,7 @@ def format_decision(decision: Draft) -> str:
     return "\n".join(lines)
 
 
-def _escalation(decision: Draft) -> str:
+def _escalation(decision: FinalDecision) -> str:
     if decision.escalation_id:
         return decision.escalation_id
     return "NOT RECORDED" if decision.decision == Decision.ESCALATE else "-"

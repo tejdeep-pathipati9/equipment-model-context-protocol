@@ -153,7 +153,7 @@ is clearly outside policy and the data is unambiguous (e.g. a contractor asking 
 is **escalated** when it is outside policy *and* there is a reason a human might decide
 differently (an unverifiable breakage claim, a contradiction).
 
-Every escalation calls `flag_for_human_review` and the reply includes its escalation ID.
+Every escalation is saved with `flag_for_human_review`, and the reply includes its escalation ID.
 
 ---
 
@@ -175,23 +175,26 @@ The message to the employee must:
   review**;
 - for basis `refresh`, say it replaces an existing unit; for basis `quantity`, not say that a unit
   is replaced or must be returned;
-- include the escalation ID when escalated.
+- when escalated, explain why a person needs to decide. The system adds "Sent for human review"
+  and the escalation ID once the escalation is saved; the agent never writes them.
 
-Before a response is final, the agent **reflects** on its draft:
-- a code check confirms the decision matches the last eligibility result (`approve` ⇒ `eligible`;
-  `deny` ⇒ `not_eligible`, or `AT_MAX_QUANTITY` with basis `refresh`; `escalate` ⇒ an escalation
-  ID is present);
-- a separate LLM critic checks every claim in the draft against the tool observations.
+**The agent decides; the system writes, once.** The agent only looks up facts and submits a draft.
+To escalate, the draft has a `reason_code` and an `escalation_reason` (a note for the human
+reviewer), but no escalation ID. Nothing is saved until the draft passes reflection:
+- a code check confirms the decision matches the eligibility result **for the draft's item**
+  (`approve` ⇒ `eligible`; `deny` ⇒ `not_eligible`, or `AT_MAX_QUANTITY` with basis `refresh`;
+  `escalate` ⇒ the reason code fits the results in rule order, e.g. `EXCEPTION_REQUEST` is rejected
+  when policy allows one more unit);
+- a separate LLM critic checks the decision, the message and the reviewer's note against the tool
+  observations.
 
-An escalation is reviewed the same way **before it is saved**: a code check confirms the reason
-code fits the tool results in rule order (e.g. `EXCEPTION_REQUEST` is rejected when policy allows one
-more unit), then the critic checks it against the decision rules. Only an accepted escalation calls
-`flag_for_human_review`, so a wrong one is never saved.
-
-A draft or escalation that fails goes back to the agent with its issues, so the agent can reword it
-or look up a missing fact with the tools. After 2 rejections, the next one escalates the request
-instead (`REFLECTION_FAILED`). If the request was already escalated, its saved escalation ID and reason
-code are kept. If the agent exceeds 8 reasoning steps, the request is escalated
+Only then does the system call `flag_for_human_review`, once, and add the reference to the message.
+If the save fails, the reply says it could not be recorded. A draft that fails review goes back to
+the agent with its issues, so it can reword it or look up a missing fact; nothing was saved, so it
+may still change its decision. After 2 rejections, the next one escalates the request instead
+(`REFLECTION_FAILED`). If the critic gives no verdict on an escalation that passed the code check,
+it is saved with its proposed reason code, a standard message, and a reviewer's note saying it was
+not reviewed. If the agent exceeds 8 reasoning steps, the request is escalated
 (`AGENT_STEP_LIMIT`). If the model declines to answer, it is escalated (`AGENT_REFUSED`).
 
 ---

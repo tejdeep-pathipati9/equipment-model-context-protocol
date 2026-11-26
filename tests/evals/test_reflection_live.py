@@ -43,17 +43,20 @@ def deny(item, reason_code, message):
     return _draft("deny", reason_code, item, message)
 
 
-def escalate(item, reason_code, message):
-    return _draft("escalate", reason_code, item, message, "ESC-1")
+BROKEN_MONITOR_NOTE = "Employee says one monitor died. Their monitors are not due for a refresh."
 
 
-def _draft(decision, reason_code, item, message, escalation_id=None):
+def escalate(item, reason_code, message, note=BROKEN_MONITOR_NOTE):
+    return _draft("escalate", reason_code, item, message, note)
+
+
+def _draft(decision, reason_code, item, message, note=None):
     return Draft(
         decision=decision,
         reason_code=reason_code,
         item=item,
         message_to_employee=message,
-        escalation_id=escalation_id,
+        escalation_reason=note,
     )
 
 
@@ -67,7 +70,7 @@ def steps_for(server_db):
         as_of, employee, item = date(2026, 12, 1), request.employee_id, draft.item
         info = tools.get_employee_info(repo, employee, as_of)
         verdict = tools.check_request_eligibility(repo, employee, item, as_of)
-        steps = [
+        return [
             Step("", "get_employee_info", {"employee_id": employee}, info, False),
             Step(
                 "",
@@ -77,11 +80,6 @@ def steps_for(server_db):
                 False,
             ),
         ]
-        if draft.decision == "escalate":
-            arguments = {"employee_id": employee, "reason_code": draft.reason_code}
-            saved = {"escalation_id": "ESC-1", "status": "open"}
-            steps.append(Step("", "flag_for_human_review", arguments, saved, False))
-        return steps
 
     yield build
     conn.close()
@@ -138,9 +136,19 @@ BAD = [
         escalate(
             "monitor",
             "EXCEPTION_REQUEST",
-            "I passed this to a human reviewer (ESC-1). They will approve your replacement.",
+            "A person needs to decide this, and they will approve your replacement.",
         ),
         id="review outcome",
+    ),
+    pytest.param(
+        DEAD_MONITOR,
+        escalate(
+            "monitor",
+            "EXCEPTION_REQUEST",
+            "Your monitors are not due for a refresh, so a person needs to decide.",
+            note="The monitor is broken and must be replaced.",
+        ),
+        id="note states the claim as a fact",
     ),
     pytest.param(
         DEAD_MONITOR,
@@ -213,7 +221,7 @@ GOOD = [
             "monitor",
             "EXCEPTION_REQUEST",
             "Your monitors are not due for a refresh, and I cannot verify that one is broken, so "
-            "I passed your request to a human reviewer (ESC-1).",
+            "a person needs to decide.",
         ),
         id="escalate",
     ),
@@ -253,8 +261,9 @@ GOOD = [
             "monitor",
             "VAGUE_REQUEST",
             "I can only handle one unit of one item per request (laptop, monitor, keyboard/mouse, "
-            "headset or phone), so I passed this to a human reviewer (ESC-1). You can also send a "
-            "separate request for a single item. I cannot answer questions about PTO.",
+            "headset or phone), so a person needs to decide. You can also send a separate request "
+            "for a single item. I cannot answer questions about PTO.",
+            note="The request names two monitors, a macbook and a PTO question.",
         ),
         id="names the catalog",
     ),
