@@ -9,9 +9,10 @@ from typing import Any
 from pydantic import ValidationError
 
 from equipment.agent.types import Draft, Eligibility, Step
-from equipment.domain.models import Basis, Decision, ErrorCode, ReasonCode, Status
+from equipment.domain.models import ESCALATION_CODES, Basis, Decision, ErrorCode, ReasonCode, Status
 
 ELIGIBILITY = "check_request_eligibility"
+LOOKUPS = {"get_employee_info", ELIGIBILITY}  # either one finds out whether the employee exists
 VERDICTS = {Decision.APPROVE: Status.ELIGIBLE, Decision.DENY: Status.NOT_ELIGIBLE}
 SET_BY_CODE = {ReasonCode.REFLECTION_FAILED, ReasonCode.AGENT_STEP_LIMIT, ReasonCode.AGENT_REFUSED}
 NEEDS_REVIEW_CODES = {ReasonCode.ITEM_NOT_IN_CATALOG, ReasonCode.RECORDS_INCOMPLETE}
@@ -47,10 +48,16 @@ def _check_verdict(draft: Draft, steps: list[Step]) -> list[str]:
         return [f"{decision}, but there is no eligibility result for {draft.item or 'the item'}"]
     if result.status == Status.NEEDS_REVIEW:  # requirements 4, rule 3 comes before rule 6
         return [f"{decision}, but eligibility is needs_review ({result.reason_code}): escalate"]
-    if decision == Decision.DENY and code == ReasonCode.AT_MAX_QUANTITY:
+    # Rule 6: at the max (basis refresh), an extra unit is denied whatever the refresh says.
+    extra_at_max = draft.extra_unit and result.basis == Basis.REFRESH
+    if code == ReasonCode.AT_MAX_QUANTITY:
         if result.basis != Basis.REFRESH:
             return [f"{code} needs basis refresh, but the basis is {result.basis}"]
+        if decision != Decision.DENY or not draft.extra_unit:
+            return [f"{code} only denies an extra unit (extra_unit true), not a replacement"]
         return []
+    if extra_at_max:
+        return [f"{decision}, but an extra unit at the max is denied with AT_MAX_QUANTITY"]
     if result.status != VERDICTS[decision]:
         return [f"{decision}, but eligibility is {result.status}"]
     if code != result.reason_code:
@@ -66,13 +73,16 @@ def _check_escalation(draft: Draft, steps: list[Step]) -> list[str]:
     code = draft.reason_code
     if code in SET_BY_CODE:
         return [f"{code} is set by code, not by the agent"]
+    if code not in ESCALATION_CODES:  # flag_for_human_review would refuse to save it
+        return [f"{code} is not an escalation reason code"]
     not_found = any(_error(step) == ErrorCode.EMPLOYEE_NOT_FOUND for step in steps)
     if code == ReasonCode.UNKNOWN_EMPLOYEE:
         return [] if not_found else [f"{code}, but no lookup returned EMPLOYEE_NOT_FOUND"]
     if not_found:  # rule 1 comes before every other rule
         return [f"{code}, but the employee was not found: escalate with UNKNOWN_EMPLOYEE"]
-    if code == ReasonCode.VAGUE_REQUEST:  # rule 2 comes before every eligibility rule
-        return []
+    if code == ReasonCode.VAGUE_REQUEST:  # rule 2: after rule 1, before every eligibility rule
+        looked_up = any(step.action in LOOKUPS and _found(step) for step in steps)
+        return [] if looked_up else [f"{code}, but the employee was not looked up first"]
 
     result = eligibility_for(draft.item, steps)
     if result is None:
@@ -84,7 +94,14 @@ def _check_escalation(draft: Draft, steps: list[Step]) -> list[str]:
         return [f"{code}, but eligibility is {status} ({verdict})"]
     if code == ReasonCode.EXCEPTION_REQUEST and result.basis == Basis.QUANTITY:
         return [f"{code}, but policy allows one more unit ({verdict}): approve"]
+    if code == ReasonCode.EXCEPTION_REQUEST and status == Status.ELIGIBLE and not draft.extra_unit:
+        return [f"{code}, but policy allows a replacement ({verdict}): approve"]
     return []
+
+
+def _found(step: Step) -> bool:
+    """A lookup that returned a record; tools return domain errors as data, not as MCP errors."""
+    return not step.is_error and isinstance(step.observation, dict) and not _error(step)
 
 
 def _error(step: Step) -> Any:

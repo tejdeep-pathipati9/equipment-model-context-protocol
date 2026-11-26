@@ -3,7 +3,7 @@
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -24,6 +24,9 @@ class Draft(ModelOutput):
     decision: Decision
     reason_code: ReasonCode
     item: str | None
+    extra_unit: bool = Field(
+        description="true only if the employee asks to keep every unit they hold and add one more"
+    )
     message_to_employee: str = Field(min_length=1)
     escalation_reason: str | None = Field(
         description="escalate only: a short note for the human reviewer; null otherwise"
@@ -63,6 +66,13 @@ class Eligibility(BaseModel):
     status: Status
     reason_code: ReasonCode
     basis: Basis | None
+
+
+class Receipt(BaseModel):
+    """What flag_for_human_review returns once it saved the escalation; else it is unconfirmed."""
+
+    escalation_id: str = Field(min_length=1)
+    status: Literal["open"]
 
 
 def validation_issues(error: ValidationError) -> list[str]:
@@ -125,6 +135,7 @@ class Step:
     observation: Any
     is_error: bool
     actor: str = "agent"  # "code" for an action the model did not choose, e.g. saving
+    same_turn_as: int | None = None  # the step whose model turn also requested this one
 
 
 @dataclass(frozen=True)
@@ -181,7 +192,7 @@ class AgentResult:
 
     @property
     def recorded(self) -> bool:
-        """False for an escalation that could not be saved: no human will ever see it."""
+        """False for an escalation whose save was not confirmed: no human may ever see it."""
         decision = self.decision
         return decision.decision != Decision.ESCALATE or decision.escalation_id is not None
 

@@ -10,11 +10,15 @@ def format_step(number: int, step: Step) -> str:
     observation = json.dumps(step.observation)
     if step.is_error:
         observation = f"ERROR {observation}"
-    actor = "  Actor:       code\n" if step.actor == "code" else ""
+    explanation = f"  Thought:     {step.thought or '(none)'}\n"
+    if step.actor == "code":
+        explanation = f"  Actor:       code\n  Reason:      {step.thought or '(none)'}\n"
+    elif step.same_turn_as:
+        together = f"same as step {step.same_turn_as} (tools requested together)"
+        explanation = f"  Model turn:  {together}\n"
     return (
         f"Step {number}\n"
-        f"{actor}"
-        f"  Thought:     {step.thought or '(none)'}\n"
+        f"{explanation}"
         f"  Action:      {step.action}({json.dumps(step.arguments)})\n"
         f"  Observation: {observation}"
     )
@@ -34,6 +38,7 @@ def format_review(number: int, review: Review) -> str:
         f"Reflection: draft {number}",
         f"  Decision:    {str(draft.get('decision', '-')).upper()} ({draft.get('reason_code')})",
         f"  Message:     {draft.get('message_to_employee', '-')}",
+        *(["  Extra unit:  yes"] if draft.get("extra_unit") else []),
         *([f"  Reviewer:    {note}"] if note else []),
         f"  Code check:  {_result(review.code_issues)}",
         f"  Critic:      {critic}",
@@ -77,4 +82,4 @@ def format_decision(decision: FinalDecision) -> str:
 def _escalation(decision: FinalDecision) -> str:
     if decision.escalation_id:
         return decision.escalation_id
-    return "NOT RECORDED" if decision.decision == Decision.ESCALATE else "-"
+    return "NOT CONFIRMED" if decision.decision == Decision.ESCALATE else "-"

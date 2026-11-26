@@ -7,6 +7,7 @@ happens to a rejected draft.
 import json
 from typing import Any
 
+import anthropic
 from anthropic import transform_schema
 from anthropic.types import Message, ToolParam
 from pydantic import ValidationError
@@ -17,6 +18,14 @@ from equipment.agent.react import SUBMIT
 from equipment.agent.types import CriticReview, Draft, Request, Step
 
 REVIEW = "submit_review"
+# The critic is unavailable after the SDK's own retries: treat it as no verdict, so the safe path
+# runs. Other errors, like a bad request, mean misconfiguration and are raised.
+UNAVAILABLE = (
+    anthropic.APIConnectionError,
+    anthropic.RateLimitError,
+    anthropic.InternalServerError,
+)
+
 REVIEW_TOOL: ToolParam = {
     "name": REVIEW,
     "description": "Submit the review of the draft. An empty list means the draft is correct.",
@@ -30,9 +39,12 @@ async def critique(
 ) -> list[str] | None:
     """The critic's issues, e.g. '"by Friday": ...'. Empty = pass, None = no verdict."""
     content = json.dumps(_evidence(request, steps) | {"draft": draft.model_dump(mode="json")})
-    reply = await llm.create(
-        system=CRITIC, messages=[{"role": "user", "content": content}], tools=[REVIEW_TOOL]
-    )
+    try:
+        reply = await llm.create(
+            system=CRITIC, messages=[{"role": "user", "content": content}], tools=[REVIEW_TOOL]
+        )
+    except UNAVAILABLE:  # a timeout is a connection error too
+        return None
     try:
         review = CriticReview.model_validate(_tool_input(reply, REVIEW))
     except ValidationError:  # also a refusal or a cut-off reply, which have no tool input

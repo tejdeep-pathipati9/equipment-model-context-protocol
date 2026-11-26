@@ -86,19 +86,26 @@ def seed_data(conn: sqlite3.Connection) -> None:
 
 
 def main() -> None:
+    """Create the database once; exit with an error on one from an older schema."""
     path = db_path()
     if path.exists():
         with closing(sqlite3.connect(path)) as conn:
             current = is_current(conn)
-        if current:
-            print(f"seed: {path} already exists, leaving it as is")
-        else:
-            print(f"seed: {path} is from an older schema; delete it and run seed again")
+        if not current:  # fails the container at startup instead of serving an old database
+            raise SystemExit(f"seed: {path} is from an older schema; delete it and run seed again")
+        print(f"seed: {path} already exists, leaving it as is")
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(path) as conn:
-        create_schema(conn)
-        seed_data(conn)
+    building = path.with_name(f"{path.name}.building")
+    building.unlink(missing_ok=True)  # left by an interrupted run
+    try:
+        with closing(sqlite3.connect(building)) as conn, conn:  # `with conn` commits
+            create_schema(conn)
+            seed_data(conn)
+    except BaseException:
+        building.unlink(missing_ok=True)
+        raise
+    building.replace(path)  # atomic: the database appears complete, or not at all
     print(f"seed: created {path} ({len(EMPLOYEES)} employees, {len(EQUIPMENT)} equipment rows)")
 
 
