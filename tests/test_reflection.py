@@ -362,9 +362,9 @@ def test_prompts_tell_a_current_state_from_a_promised_action(prompt):
     assert "a reviewer will look at it" in prompt
 
 
-def test_critic_and_rejection_know_the_system_facts():
-    assert all(SYSTEM_FACTS in prompt for prompt in (CRITIC, REJECTED))
-    assert all(MESSAGE_RULES in prompt for prompt in (CRITIC, REJECTED))
+def test_all_prompts_share_the_system_facts_and_message_rules():
+    assert all(SYSTEM_FACTS in prompt for prompt in (SYSTEM, CRITIC, REJECTED))
+    assert all(MESSAGE_RULES in prompt for prompt in (SYSTEM, CRITIC, REJECTED))
     assert all(CATALOG in prompt for prompt in (SYSTEM, SYSTEM_FACTS))
 
 

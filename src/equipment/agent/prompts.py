@@ -1,6 +1,6 @@
 """Prompts for the drafter and the critic (docs/requirements.md 4 and 5).
 
-Both share the decision rules. The drafter only gets the message rules when a draft is rejected.
+Both share the decision rules, system facts and message rules from the first draft.
 """
 
 CATALOG = "laptop, monitor, keyboard_mouse, headset, phone"
@@ -76,8 +76,9 @@ Set extra_unit to true only when the employee asks to keep every unit they hold 
 ("keep my laptop and give me a second one"). A replacement is false ("replace my laptop", "a new \
 one", "it is old"). Rule 6 applies only when extra_unit is true.
 
-The message to the employee explains the decision using the tool results. For basis refresh, say \
-the new unit replaces their oldest one; for basis quantity, do not say anything is replaced.
+{SYSTEM_FACTS}
+
+{MESSAGE_RULES}
 """
 
 CRITIC = f"""\
