@@ -364,7 +364,10 @@ def run_planted(server_db, monkeypatch):
 
     def run(request, *turns, client=None):
         llm = PlantedLLM(client or FoundryClient.from_env(), *turns)
-        print("\nPLANTED FIRST DRAFT (hand-written, not produced by the agent)\n")
+        print(
+            "\nFAULT INJECTION: first draft replaced with a known-bad decision. "
+            "The code check, critic, revision and save below are live.\n"
+        )
 
         async def go():
             async with connect() as mcp:
