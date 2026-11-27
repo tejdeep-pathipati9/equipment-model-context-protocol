@@ -61,7 +61,7 @@ jobs:
       - name: Build test image
         run: docker build --target test -t equip-agent-test .
 
-      - name: Run live-LLM evals (4 demo scenarios + 1 planted reflection catch)
+      - name: Run live-LLM evals (4 demo scenarios + 1 fault-injection reflection test)
         env:
           ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
           ANTHROPIC_FOUNDRY_BASE_URL: ${{ secrets.ANTHROPIC_FOUNDRY_BASE_URL }}
