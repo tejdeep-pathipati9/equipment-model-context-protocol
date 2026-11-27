@@ -14,7 +14,7 @@ from itertools import count
 from types import SimpleNamespace
 
 import pytest
-from anthropic.types import ToolUseBlock
+from anthropic.types import TextBlock, ToolUseBlock
 from evals.comparison import Comparison, usage_totals
 
 from equipment import tools
@@ -166,6 +166,16 @@ BAD = [
             note="The monitor is broken and must be replaced.",
         ),
         id="note states the claim as a fact",
+    ),
+    pytest.param(
+        DEAD_MONITOR,
+        escalate(
+            "monitor",
+            "EXCEPTION_REQUEST",
+            "Your monitors are not due for a refresh, so a person needs to decide.",
+            note="The employee says one of his monitors died; his monitors are not due.",
+        ),
+        id="note assumes a gender",
     ),
     pytest.param(
         DEAD_MONITOR,
@@ -333,8 +343,10 @@ class PlantedLLM:
 
 
 def planted_turn(id, name, arguments):
+    """A scripted drafter turn; its Thought says it was injected, so the trace shows it."""
+    thought = TextBlock(type="text", text="Thought: (injected by the test)")
     block = ToolUseBlock(type="tool_use", id=id, name=name, input=arguments)
-    return SimpleNamespace(stop_reason="tool_use", content=[block])
+    return SimpleNamespace(stop_reason="tool_use", content=[thought, block])
 
 
 def look_up(request, item):
@@ -354,7 +366,10 @@ def run_planted(server_db, monkeypatch):
 
     def run(request, *turns, client=None):
         llm = PlantedLLM(client or FoundryClient.from_env(), *turns)
-        print("\nPLANTED FIRST DRAFT (hand-written, not produced by the agent)\n")
+        print(
+            "\nFAULT INJECTION: first draft replaced with a known-bad decision. "
+            "The code check, critic, revision and save below are live.\n"
+        )
 
         async def go():
             async with connect() as mcp:
@@ -369,6 +384,7 @@ def run_planted(server_db, monkeypatch):
 
         result = asyncio.run(go())
         print(format_outcome(result))
+        print(format_decision(result.decision))
         return result
 
     return run
@@ -436,7 +452,6 @@ def test_claimed_exception_revises_policy_only_denial(
     assert check_draft(wrong, steps_for(request, wrong)) == []
     measured = Comparison(FoundryClient.from_env())
     result = run_planted(request, look_up(request, "laptop"), submit(wrong), client=measured)
-    print(format_decision(result.decision))
     trace = capsys.readouterr().out
     with closing(sqlite3.connect(server_db)) as conn:
         saved = conn.execute("SELECT reason_code FROM escalations").fetchall()

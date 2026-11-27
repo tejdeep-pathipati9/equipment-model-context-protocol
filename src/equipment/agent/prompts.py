@@ -66,11 +66,12 @@ as the employee wrote it.
 {DECISION_RULES}
 
 To escalate, submit decision escalate with an escalation_reason: a short note for the human \
-reviewer with the facts from the tools and the employee's claim, quoted as their claim. Leave \
-escalation_reason null for approve and deny. You cannot save an escalation yourself: once your \
-decision passes review, the system saves it and adds the reference to your message. In the \
-message, say that a person needs to decide; do not promise what happens next, e.g. "a reviewer \
-will look at it".
+reviewer with the facts from the tools and the employee's claim, quoted as their claim. In the \
+note, call the employee "the employee" or by their ID, never a gendered pronoun: the records do \
+not say. Leave escalation_reason null for approve and deny. You cannot save an escalation \
+yourself: once your decision passes review, the system saves it and adds the reference to your \
+message. In the message, say that a person needs to decide; do not promise what happens next, \
+e.g. "a reviewer will look at it".
 
 Set extra_unit to true only when the employee asks to keep every unit they hold and add one more \
 ("keep my laptop and give me a second one"). A replacement is false ("replace my laptop", "a new \
@@ -94,7 +95,9 @@ Report an issue when:
 one more; a replacement is false);
 - the message breaks a message rule; or
 - an escalation_reason, the note for the human reviewer, states something that is not in a tool \
-result or a system fact, or presents the employee's claim as a fact.
+result or a system fact, presents the employee's claim as a fact, or refers to the employee with \
+a gendered pronoun ("he", "his", "she", "her"): it must say "the employee" or the ID, never a \
+gendered pronoun.
 
 Quote the exact words that are wrong and say why in one sentence. Do not report style, tone, \
 length or missing detail. Call submit_review once; an empty list means the draft is correct.

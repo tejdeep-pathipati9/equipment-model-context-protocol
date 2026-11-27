@@ -362,6 +362,11 @@ def test_prompts_tell_a_current_state_from_a_promised_action(prompt):
     assert "a reviewer will look at it" in prompt
 
 
+@pytest.mark.parametrize("prompt", [SYSTEM, CRITIC])
+def test_reviewer_note_must_not_assume_a_gender(prompt):
+    assert "never a gendered pronoun" in prompt
+
+
 def test_all_prompts_share_the_system_facts_and_message_rules():
     assert all(SYSTEM_FACTS in prompt for prompt in (SYSTEM, CRITIC, REJECTED))
     assert all(MESSAGE_RULES in prompt for prompt in (SYSTEM, CRITIC, REJECTED))
