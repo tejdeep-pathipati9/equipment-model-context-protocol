@@ -49,9 +49,11 @@ jobs:
   agent-eval:
     name: agent-eval
     needs: test
-    # Live model calls cost money and are not deterministic, so they never gate a merge.
-    # Start it from Actions > CI > Run workflow.
-    if: github.event_name == 'workflow_dispatch'
+    # Live model calls cost money, so they run after a merge into main (5 tests), or on demand
+    # from Actions > CI > Run workflow. Never on pull requests or other branches.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
