@@ -169,6 +169,16 @@ BAD = [
     ),
     pytest.param(
         DEAD_MONITOR,
+        escalate(
+            "monitor",
+            "EXCEPTION_REQUEST",
+            "Your monitors are not due for a refresh, so a person needs to decide.",
+            note="The employee says one of his monitors died; his monitors are not due.",
+        ),
+        id="note assumes a gender",
+    ),
+    pytest.param(
+        DEAD_MONITOR,
         deny("monitor", "REFRESH_NOT_DUE", "Denied: your monitors are not due for a refresh."),
         id="denied, but breakage needs a human",
     ),
