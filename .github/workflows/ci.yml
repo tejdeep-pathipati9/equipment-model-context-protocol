@@ -49,8 +49,8 @@ jobs:
   agent-eval:
     name: agent-eval
     needs: test
-    # Build step 11: add `|| (github.event_name == 'push' && github.ref == 'refs/heads/main')`
-    # once the agent and tests/evals exist. Manual-only until then.
+    # Live model calls cost money and are not deterministic, so they never gate a merge.
+    # Start it from Actions > CI > Run workflow.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
@@ -59,14 +59,19 @@ jobs:
       - name: Build test image
         run: docker build --target test -t equip-agent-test .
 
-      - name: Run live-LLM evals
+      - name: Run live-LLM evals (4 demo scenarios + 1 planted reflection catch)
         env:
           ANTHROPIC_FOUNDRY_API_KEY: ${{ secrets.ANTHROPIC_FOUNDRY_API_KEY }}
-          ANTHROPIC_FOUNDRY_RESOURCE: ${{ secrets.ANTHROPIC_FOUNDRY_RESOURCE }}
+          ANTHROPIC_FOUNDRY_BASE_URL: ${{ secrets.ANTHROPIC_FOUNDRY_BASE_URL }}
           AGENT_MODEL: ${{ secrets.AGENT_MODEL }}
         run: |
           docker run --rm \
             -e ANTHROPIC_FOUNDRY_API_KEY \
-            -e ANTHROPIC_FOUNDRY_RESOURCE \
+            -e ANTHROPIC_FOUNDRY_BASE_URL \
             -e AGENT_MODEL \
-            equip-agent-test pytest -m eval
+            equip-agent-test pytest -m eval -s \
+              "tests/evals/test_comparison_live.py::test_before_and_after_reflection[01-second-monitor]" \
+              "tests/evals/test_comparison_live.py::test_before_and_after_reflection[04-contractor-laptop]" \
+              "tests/evals/test_comparison_live.py::test_before_and_after_reflection[06-broken-monitor-exception]" \
+              "tests/evals/test_comparison_live.py::test_before_and_after_reflection[07-contradictory-age]" \
+              "tests/evals/test_reflection_live.py::test_claimed_exception_revises_policy_only_denial"
